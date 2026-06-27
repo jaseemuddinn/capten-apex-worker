@@ -1,0 +1,8 @@
+runpod==1.7.7
+torch==2.4.1
+transformers==4.46.3
+accelerate==1.1.1
+datasets==3.1.0
+soundfile==0.12.1
+librosa==0.10.2.post1
+requests==2.32.3
