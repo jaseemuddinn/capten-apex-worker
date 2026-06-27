@@ -139,19 +139,7 @@ def text_to_words(text: str, duration: float | None = None) -> list[dict]:
 
 
 def run_transcription(pipe, sample: dict) -> dict:
-    """Apex fine-tune lacks alignment_heads — word timestamps crash transformers."""
-    try:
-        result = pipe(
-            sample,
-            return_timestamps=True,
-            chunk_length_s=30,
-            batch_size=8,
-        )
-        if (result.get("text") or "").strip():
-            return result
-    except Exception:
-        pass
-
+    """Apex fine-tune has no alignment_heads — any return_timestamps mode crashes."""
     return pipe(sample, chunk_length_s=30, batch_size=8)
 
 
