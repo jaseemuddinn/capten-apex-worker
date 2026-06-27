@@ -1,16 +1,23 @@
 {
     "title": "Capten Apex Worker",
-    "description": "Hindi → Hinglish speech-to-text using Oriserve/Whisper-Hindi2Hinglish-Apex. Accepts audio_url or audio_base64; returns text + word timestamps for Capten.",
+    "description": "Hindi to Hinglish speech-to-text using Oriserve/Whisper-Hindi2Hinglish-Apex. Accepts audio_url or audio_base64; returns text and word timestamps for Capten.",
     "type": "serverless",
     "category": "audio",
     "config": {
       "runsOn": "GPU",
       "containerDiskInGb": 20,
       "gpuCount": 1,
-      "gpuIds": "NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA GeForce RTX 3090",
+      "gpuIds": "ADA_24,AMPERE_24,AMPERE_16",
       "allowedCudaVersions": [
-        "12.8", "12.7", "12.6", "12.5", "12.4",
-        "12.3", "12.2", "12.1", "12.0"
+        "12.8",
+        "12.7",
+        "12.6",
+        "12.5",
+        "12.4",
+        "12.3",
+        "12.2",
+        "12.1",
+        "12.0"
       ],
       "presets": [
         {
@@ -26,7 +33,7 @@
           "input": {
             "type": "huggingface",
             "name": "Whisper Hinglish model",
-            "description": "Hugging Face model ID. Default is Oriserve Apex for Hindi→Hinglish.",
+            "description": "Hugging Face model ID. Default is Oriserve Apex for Hindi to Hinglish transcription.",
             "default": "Oriserve/Whisper-Hindi2Hinglish-Apex",
             "required": true
           }
@@ -34,3 +41,4 @@
       ]
     }
   }
+  
