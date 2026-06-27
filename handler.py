@@ -1,7 +1,6 @@
 import base64
 import io
 import os
-import re
 from pathlib import Path
 
 import requests
@@ -16,12 +15,20 @@ CACHE_ROOT = Path("/runpod-volume/huggingface-cache/hub")
 _pipe = None
 
 
-def resolve_cached_model_path(model_id: str) -> str | None:
-    """Resolve RunPod HF cache path, e.g. models--Oriserve--Whisper-Hindi2Hinglish-Apex/snapshots/<hash>"""
+def resolve_snapshot_path(model_id: str) -> str | None:
+    """Resolve RunPod HF cache: models--Org--Name/snapshots/<hash>/"""
     folder = "models--" + model_id.replace("/", "--")
     snapshots = CACHE_ROOT / folder / "snapshots"
     if not snapshots.exists():
         return None
+
+    refs_main = CACHE_ROOT / folder / "refs" / "main"
+    if refs_main.exists():
+        commit = refs_main.read_text().strip()
+        snap = snapshots / commit
+        if snap.is_dir():
+            return str(snap)
+
     for snap in sorted(snapshots.iterdir()):
         if snap.is_dir():
             return str(snap)
@@ -36,7 +43,7 @@ def load_pipeline():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device.startswith("cuda") else torch.float32
 
-    local_path = resolve_cached_model_path(MODEL_ID)
+    local_path = resolve_snapshot_path(MODEL_ID)
     model_source = local_path or MODEL_ID
 
     if local_path:
@@ -49,6 +56,7 @@ def load_pipeline():
         low_cpu_mem_usage=True,
         use_safetensors=True,
         local_files_only=bool(local_path),
+        attn_implementation="eager",
     ).to(device)
 
     processor = AutoProcessor.from_pretrained(
@@ -65,7 +73,7 @@ def load_pipeline():
         device=device,
         generate_kwargs={
             "task": "transcribe",
-            "language": "en",  # Apex outputs Hinglish in Latin script
+            "language": "en",
         },
     )
     return _pipe
@@ -75,9 +83,9 @@ def load_audio_bytes(job_input: dict) -> bytes:
     for key in ("audio_url", "url", "audio"):
         val = job_input.get(key)
         if isinstance(val, str) and val.startswith("http"):
-            r = requests.get(val, timeout=120)
-            r.raise_for_status()
-            return r.content
+            res = requests.get(val, timeout=120)
+            res.raise_for_status()
+            return res.content
 
     b64 = job_input.get("audio_base64")
     if isinstance(b64, str):
@@ -87,31 +95,67 @@ def load_audio_bytes(job_input: dict) -> bytes:
     if isinstance(audio, str) and "base64," in audio:
         return base64.b64decode(audio.split("base64,", 1)[1])
 
-    raise ValueError("No audio found. Pass audio_url, url, audio (http), or audio_base64.")
+    raise ValueError(
+        "No audio input. Pass audio_url, url, audio (http/https), or audio_base64."
+    )
 
 
-def bytes_to_float_array(data: bytes):
+def bytes_to_sample(data: bytes) -> dict:
     audio, sr = sf.read(io.BytesIO(data), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
-  # Resample to 16 kHz if needed (Whisper expects 16k)
     if sr != 16000:
         import librosa
+
         audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
         sr = 16000
     return {"array": audio, "sampling_rate": sr}
 
 
-def chunks_to_words(chunks):
-    words = []
+def text_to_words(text: str, duration: float | None = None) -> list[dict]:
+    tokens = text.split()
+    if not tokens:
+        return []
+    if duration and duration > 0:
+        step = duration / len(tokens)
+        return [
+            {
+                "word": w,
+                "start": i * step,
+                "end": (i + 1) * step,
+                "confidence": 0.85,
+            }
+            for i, w in enumerate(tokens)
+        ]
+    return [
+        {
+            "word": w,
+            "start": i * 0.4,
+            "end": (i + 1) * 0.4,
+            "confidence": 0.85,
+        }
+        for i, w in enumerate(tokens)
+    ]
+
+
+def run_transcription(pipe, sample: dict) -> dict:
+    """Apex fine-tune has no alignment_heads — any return_timestamps mode crashes."""
+    return pipe(sample, chunk_length_s=30, batch_size=8)
+
+
+def chunks_to_words(chunks: list) -> list[dict]:
+    words: list[dict] = []
     for chunk in chunks or []:
         text = (chunk.get("text") or "").strip()
         ts = chunk.get("timestamp")
         if not text or not ts or ts[0] is None:
             continue
-        start, end = float(ts[0]), float(ts[1] if ts[1] is not None else ts[0] + 0.3)
-        for w in text.split():
-            words.append({"word": w, "start": start, "end": end, "confidence": 0.9})
+        start = float(ts[0])
+        end = float(ts[1] if ts[1] is not None else ts[0] + 0.3)
+        for token in text.split():
+            words.append(
+                {"word": token, "start": start, "end": end, "confidence": 0.9}
+            )
     return words
 
 
@@ -119,29 +163,27 @@ def handler(job):
     job_input = job["input"]
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
-    sample = bytes_to_float_array(audio_bytes)
+    sample = bytes_to_sample(audio_bytes)
+    duration = len(sample["array"]) / sample["sampling_rate"]
 
-    result = pipe(
-        sample,
-        return_timestamps="word",
-        chunk_length_s=30,
-        batch_size=8,
-    )
+    result = run_transcription(pipe, sample)
 
     text = (result.get("text") or "").strip()
-    chunks = result.get("chunks") or []
-    words = chunks_to_words(chunks)
+    words = chunks_to_words(result.get("chunks") or [])
 
     if not words and text:
-        words = [
-            {"word": w, "start": i * 0.4, "end": (i + 1) * 0.4, "confidence": 0.85}
-            for i, w in enumerate(text.split())
-        ]
+        words = text_to_words(text, duration)
 
     return {
         "text": text,
         "words": words,
-        "segments": [{"text": text, "start": 0, "end": words[-1]["end"] if words else 0}],
+        "segments": [
+            {
+                "text": text,
+                "start": 0.0,
+                "end": words[-1]["end"] if words else duration,
+            }
+        ],
         "language": "HINGLISH",
         "model": MODEL_ID,
     }
