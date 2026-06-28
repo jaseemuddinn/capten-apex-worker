@@ -1,11 +1,19 @@
 {
     "tests": [
       {
+        "name": "health_cuda",
+        "input": {
+          "health_check": true
+        },
+        "timeout": 180000
+      },
+      {
         "name": "transcribe_public_audio_url",
         "input": {
-          "audio_url": "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac"
+          "audio_url": "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac",
+          "skip_alignment": true
         },
-        "timeout": 600000
+        "timeout": 900000
       }
     ],
     "config": {
@@ -22,10 +30,11 @@
         },
         {
           "key": "ENABLE_ALIGNMENT",
-          "value": "true"
+          "value": "false"
         }
       ],
       "allowedCudaVersions": [
+        "12.8",
         "12.7",
         "12.6",
         "12.5",

@@ -6,9 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# PyTorch cu128: supports Ampere/Ada AND Blackwell (sm_120).
-# Do NOT pin torch in requirements.txt — pip would install cu124 wheels
-# that fail with "no kernel image is available for execution on the device".
 RUN pip install --no-cache-dir \
     "torch>=2.7.0" "torchaudio>=2.7.0" \
     --index-url https://download.pytorch.org/whl/cu128
@@ -16,7 +13,6 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# WhisperX without replacing our cu128 torch build
 RUN pip install --no-cache-dir whisperx==3.3.1 --no-deps && \
     pip install --no-cache-dir \
     "faster-whisper>=1.1.0" \
@@ -24,10 +20,19 @@ RUN pip install --no-cache-dir whisperx==3.3.1 --no-deps && \
     pandas \
     nltk
 
-COPY handler.py .
-
 ENV MODEL_ID=Oriserve/Whisper-Hindi2Hinglish-Apex
 ENV ALIGN_LANGUAGE=hi
 ENV ENABLE_ALIGNMENT=true
+
+RUN python -c "\
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor; \
+import os; \
+mid = os.environ['MODEL_ID']; \
+print('Caching', mid); \
+AutoProcessor.from_pretrained(mid); \
+AutoModelForSpeechSeq2Seq.from_pretrained(mid, use_safetensors=True); \
+print('Apex model cached')"
+
+COPY handler.py .
 
 CMD ["python", "-u", "handler.py"]

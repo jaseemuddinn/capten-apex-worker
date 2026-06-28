@@ -171,7 +171,7 @@ def bytes_to_sample(data: bytes) -> dict:
 
 def run_transcription(pipe, sample: dict) -> dict:
     """Apex fine-tune has no alignment_heads — text only, chunk-level times."""
-    return pipe(sample, chunk_length_s=30, batch_size=8)
+    return pipe(sample, chunk_length_s=30, batch_size=4)
 
 
 def apex_chunks_to_segments(
@@ -332,8 +332,30 @@ def build_output_segments(words: list[dict], text: str, duration: float) -> list
     ]
 
 
+def alignment_enabled(job_input: dict) -> bool:
+    if job_input.get("skip_alignment") or job_input.get("health_check"):
+        return False
+    return ENABLE_ALIGNMENT
+
+
 def handler(job):
     job_input = job["input"]
+
+    if job_input.get("health_check"):
+        verify_cuda()
+        info: dict = {
+            "status": "ok",
+            "torch": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "model": MODEL_ID,
+            "alignment_default": ENABLE_ALIGNMENT,
+        }
+        if torch.cuda.is_available():
+            info["gpu"] = torch.cuda.get_device_name(0)
+            cap = torch.cuda.get_device_capability(0)
+            info["capability"] = f"sm_{cap[0]}{cap[1]}"
+        return info
+
     verify_cuda()
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
@@ -350,8 +372,9 @@ def handler(job):
 
     words: list[dict] = []
     alignment = "disabled"
+    do_align = alignment_enabled(job_input)
 
-    if ENABLE_ALIGNMENT and segments:
+    if do_align and segments:
         try:
             if device == "cuda":
                 torch.cuda.empty_cache()
