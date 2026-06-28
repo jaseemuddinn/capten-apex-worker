@@ -6,8 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    "torch>=2.7.0" "torchaudio>=2.7.0" \
+# PyTorch cu128 stack — must upgrade torch, torchaudio, AND torchvision together
+# (base image ships torchvision for torch 2.4; mismatch causes torchvision::nms errors).
+RUN pip install --no-cache-dir --upgrade \
+    "torch>=2.7.0" "torchaudio>=2.7.0" "torchvision>=0.22.0" \
     --index-url https://download.pytorch.org/whl/cu128
 
 COPY requirements.txt .
