@@ -23,15 +23,11 @@ RUN pip install --no-cache-dir whisperx==3.3.1 --no-deps && \
 ENV MODEL_ID=Oriserve/Whisper-Hindi2Hinglish-Apex
 ENV ALIGN_LANGUAGE=hi
 ENV ENABLE_ALIGNMENT=true
+ENV HF_HOME=/root/.cache/huggingface
+ENV HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
 
-RUN python -c "\
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor; \
-import os; \
-mid = os.environ['MODEL_ID']; \
-print('Caching', mid); \
-AutoProcessor.from_pretrained(mid); \
-AutoModelForSpeechSeq2Seq.from_pretrained(mid, use_safetensors=True); \
-print('Apex model cached')"
+COPY cache_model.py .
+RUN python cache_model.py
 
 COPY handler.py .
 
