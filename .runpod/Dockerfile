@@ -25,6 +25,7 @@ ENV ALIGN_LANGUAGE=hi
 ENV ENABLE_ALIGNMENT=true
 ENV HF_HOME=/root/.cache/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
+ENV RUNPOD_INIT_TIMEOUT=900
 
 COPY cache_model.py .
 RUN python cache_model.py

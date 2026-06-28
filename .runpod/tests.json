@@ -5,7 +5,7 @@
         "input": {
           "health_check": true
         },
-        "timeout": 180000
+        "timeout": 300000
       },
       {
         "name": "transcribe_public_audio_url",
@@ -13,7 +13,7 @@
           "audio_url": "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac",
           "skip_alignment": true
         },
-        "timeout": 900000
+        "timeout": 600000
       }
     ],
     "config": {
@@ -31,6 +31,10 @@
         {
           "key": "ENABLE_ALIGNMENT",
           "value": "false"
+        },
+        {
+          "key": "RUNPOD_INIT_TIMEOUT",
+          "value": "900"
         }
       ],
       "allowedCudaVersions": [

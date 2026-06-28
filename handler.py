@@ -1,15 +1,13 @@
-import base64
-import io
+"""Capten Apex RunPod worker — keep top-level imports minimal for fast Hub health checks."""
+from __future__ import annotations
+
 import os
 import re
 from pathlib import Path
 
-import numpy as np
-import requests
 import runpod
-import torch
-import soundfile as sf
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+print("[startup] capten apex worker", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
 ALIGN_LANGUAGE = os.getenv("ALIGN_LANGUAGE", "hi")
@@ -18,39 +16,55 @@ ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "true").lower() not in (
     "false",
     "no",
 )
-CACHE_ROOT = Path("/runpod-volume/huggingface-cache/hub")
 
 _pipe = None
 _align_model = None
 _align_metadata = None
 
 
+def hub_cache_roots() -> list[Path]:
+    """HF cache locations: RunPod volume first, then image-baked default cache."""
+    roots: list[Path] = [Path("/runpod-volume/huggingface-cache/hub")]
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(Path(hf_home) / "hub")
+    hub_cache = os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hub_cache:
+        roots.append(Path(hub_cache))
+    return roots
+
+
 def resolve_snapshot_path(model_id: str) -> str | None:
-    """Resolve RunPod HF cache: models--Org--Name/snapshots/<hash>/"""
+    """Resolve HF cache: models--Org--Name/snapshots/<hash>/"""
     folder = "models--" + model_id.replace("/", "--")
-    snapshots = CACHE_ROOT / folder / "snapshots"
-    if not snapshots.exists():
-        return None
+    for root in hub_cache_roots():
+        snapshots = root / folder / "snapshots"
+        if not snapshots.exists():
+            continue
 
-    refs_main = CACHE_ROOT / folder / "refs" / "main"
-    if refs_main.exists():
-        commit = refs_main.read_text().strip()
-        snap = snapshots / commit
-        if snap.is_dir():
-            return str(snap)
+        refs_main = root / folder / "refs" / "main"
+        if refs_main.exists():
+            commit = refs_main.read_text().strip()
+            snap = snapshots / commit
+            if snap.is_dir():
+                return str(snap)
 
-    for snap in sorted(snapshots.iterdir()):
-        if snap.is_dir():
-            return str(snap)
+        for snap in sorted(snapshots.iterdir()):
+            if snap.is_dir():
+                return str(snap)
     return None
 
 
 def device_name() -> str:
+    import torch
+
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def verify_cuda() -> None:
     """Fail fast with a clear message when PyTorch lacks kernels for this GPU."""
+    import torch
+
     if not torch.cuda.is_available():
         print("[cuda] GPU not visible — running on CPU")
         return
@@ -81,6 +95,10 @@ def load_pipeline():
     if _pipe is not None:
         return _pipe
 
+    import torch
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+    print("[load] apex model", flush=True)
     device = device_name()
     dtype = torch.float16 if device == "cuda" else torch.float32
 
@@ -90,6 +108,7 @@ def load_pipeline():
     if local_path:
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        print(f"[load] using cached snapshot {local_path}", flush=True)
 
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_source,
@@ -117,6 +136,7 @@ def load_pipeline():
             "language": "en",
         },
     )
+    print("[load] apex ready", flush=True)
     return _pipe
 
 
@@ -137,6 +157,10 @@ def load_align_model():
 
 
 def load_audio_bytes(job_input: dict) -> bytes:
+    import base64
+
+    import requests
+
     for key in ("audio_url", "url", "audio"):
         val = job_input.get(key)
         if isinstance(val, str) and val.startswith("http"):
@@ -158,6 +182,11 @@ def load_audio_bytes(job_input: dict) -> bytes:
 
 
 def bytes_to_sample(data: bytes) -> dict:
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
     audio, sr = sf.read(io.BytesIO(data), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -174,9 +203,7 @@ def run_transcription(pipe, sample: dict) -> dict:
     return pipe(sample, chunk_length_s=30, batch_size=4)
 
 
-def apex_chunks_to_segments(
-    chunks: list, text: str, duration: float
-) -> list[dict]:
+def apex_chunks_to_segments(chunks: list, text: str, duration: float) -> list[dict]:
     """Build coarse segments from Apex chunks for WhisperX forced alignment."""
     segments: list[dict] = []
 
@@ -227,9 +254,7 @@ def text_to_segments(text: str, duration: float) -> list[dict]:
     return segments
 
 
-def align_segments_to_words(
-    audio: np.ndarray, segments: list[dict], device: str
-) -> list[dict]:
+def align_segments_to_words(audio, segments: list[dict], device: str) -> list[dict]:
     """Pass 2: forced phoneme alignment — per-word times that respect silence."""
     import whisperx
 
@@ -342,6 +367,8 @@ def handler(job):
     job_input = job["input"]
 
     if job_input.get("health_check"):
+        import torch
+
         verify_cuda()
         info: dict = {
             "status": "ok",
@@ -356,6 +383,9 @@ def handler(job):
             info["capability"] = f"sm_{cap[0]}{cap[1]}"
         return info
 
+    import numpy as np
+    import torch
+
     verify_cuda()
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
@@ -364,7 +394,6 @@ def handler(job):
     device = device_name()
     audio = np.asarray(sample["array"], dtype=np.float32)
 
-    # Pass 1 — Apex: accurate Hinglish text + coarse chunk boundaries
     result = run_transcription(pipe, sample)
     text = (result.get("text") or "").strip()
     chunks = result.get("chunks") or []
@@ -404,4 +433,5 @@ def handler(job):
     }
 
 
+print("[startup] registering handler", flush=True)
 runpod.serverless.start({"handler": handler})
