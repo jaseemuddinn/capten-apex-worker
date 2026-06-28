@@ -1,11 +1,11 @@
 {
     "title": "Capten Apex Worker",
-    "description": "Hindi to Hinglish speech-to-text using Oriserve/Whisper-Hindi2Hinglish-Apex. Accepts audio_url or audio_base64; returns text and word timestamps for Capten.",
+    "description": "Hindi to Hinglish speech-to-text using Oriserve Apex + WhisperX forced alignment for per-word timestamps that respect silence.",
     "type": "serverless",
     "category": "audio",
     "config": {
       "runsOn": "GPU",
-      "containerDiskInGb": 20,
+      "containerDiskInGb": 25,
       "gpuCount": 1,
       "gpuIds": "ADA_24,AMPERE_24,AMPERE_16",
       "allowedCudaVersions": [
@@ -36,6 +36,26 @@
             "description": "Hugging Face model ID. Default is Oriserve Apex for Hindi to Hinglish transcription.",
             "default": "Oriserve/Whisper-Hindi2Hinglish-Apex",
             "required": true
+          }
+        },
+        {
+          "key": "ALIGN_LANGUAGE",
+          "input": {
+            "type": "text",
+            "name": "Alignment language",
+            "description": "WhisperX wav2vec2 language for forced alignment (hi for Hindi speech).",
+            "default": "hi",
+            "required": false
+          }
+        },
+        {
+          "key": "ENABLE_ALIGNMENT",
+          "input": {
+            "type": "text",
+            "name": "Enable WhisperX alignment",
+            "description": "Set to false to skip pass-2 alignment (Apex chunk timestamps only).",
+            "default": "true",
+            "required": false
           }
         }
       ]
