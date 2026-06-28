@@ -49,6 +49,33 @@ def device_name() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def verify_cuda() -> None:
+    """Fail fast with a clear message when PyTorch lacks kernels for this GPU."""
+    if not torch.cuda.is_available():
+        print("[cuda] GPU not visible — running on CPU")
+        return
+    name = torch.cuda.get_device_name(0)
+    cap = torch.cuda.get_device_capability(0)
+    arch_list = []
+    if hasattr(torch.cuda, "get_arch_list"):
+        try:
+            arch_list = torch.cuda.get_arch_list()
+        except Exception:
+            pass
+    print(
+        f"[cuda] device={name} sm_{cap[0]}{cap[1]} "
+        f"torch={torch.__version__} arch_list={arch_list}"
+    )
+    try:
+        torch.zeros(1, device="cuda")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"PyTorch {torch.__version__} cannot run on {name} (sm_{cap[0]}{cap[1]}). "
+            "Rebuild the worker image with cu128 PyTorch (see Dockerfile). "
+            f"Original: {exc}"
+        ) from exc
+
+
 def load_pipeline():
     global _pipe
     if _pipe is not None:
@@ -307,6 +334,7 @@ def build_output_segments(words: list[dict], text: str, duration: float) -> list
 
 def handler(job):
     job_input = job["input"]
+    verify_cuda()
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
     sample = bytes_to_sample(audio_bytes)
