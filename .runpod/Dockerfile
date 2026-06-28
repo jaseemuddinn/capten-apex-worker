@@ -6,14 +6,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# PyTorch cu128 stack — must upgrade torch, torchaudio, AND torchvision together
-# (base image ships torchvision for torch 2.4; mismatch causes torchvision::nms errors).
-RUN pip install --no-cache-dir --upgrade \
-    "torch>=2.7.0" "torchaudio>=2.7.0" "torchvision>=0.22.0" \
-    --index-url https://download.pytorch.org/whl/cu128
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install cu128 stack LAST — requirements must not overwrite this with base-image torch 2.4.
+RUN pip uninstall -y torch torchvision torchaudio 2>/dev/null || true && \
+    pip install --no-cache-dir --force-reinstall \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu128
+
+RUN python -c "\
+import torch; \
+v = torch.__version__.split('+')[0]; \
+major, minor = (int(x) for x in v.split('.')[:2]); \
+assert (major, minor) >= (2, 7), f'Expected torch>=2.7, got {torch.__version__}'; \
+print('torch', torch.__version__, 'cuda', torch.version.cuda); \
+arch = torch.cuda.get_arch_list() if hasattr(torch.cuda, 'get_arch_list') else []; \
+print('arch_list', arch)"
 
 RUN pip install --no-cache-dir whisperx==3.3.1 --no-deps && \
     pip install --no-cache-dir \

@@ -81,12 +81,17 @@ def verify_cuda() -> None:
         f"torch={torch.__version__} arch_list={arch_list}"
     )
     try:
+        # float32 smoke test
         torch.zeros(1, device="cuda")
+        # Apex runs fp16 on GPU — catch arch mismatches that only show up in half kernels
+        probe = torch.zeros(8, 8, device="cuda", dtype=torch.float16)
+        torch.matmul(probe, probe)
+        torch.cuda.synchronize()
     except RuntimeError as exc:
         raise RuntimeError(
-            f"PyTorch {torch.__version__} cannot run on {name} (sm_{cap[0]}{cap[1]}). "
-            "Rebuild the worker image with cu128 PyTorch (see Dockerfile). "
-            f"Original: {exc}"
+            f"PyTorch {torch.__version__} (cuda {torch.version.cuda}) cannot run on "
+            f"{name} (sm_{cap[0]}{cap[1]}). Rebuild with cu128 torch>=2.7 "
+            "(see Dockerfile). Original: {exc}"
         ) from exc
 
 
