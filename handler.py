@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v4"
+WORKER_BUILD_ID = "cu128-v5"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")

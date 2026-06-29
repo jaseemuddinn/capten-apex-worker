@@ -28,8 +28,10 @@ RUN pip install --no-cache-dir whisperx==3.3.1 --no-deps && \
     pip install --no-cache-dir \
     "faster-whisper>=1.1.0" \
     "ctranslate2>=4.4.0" \
-    pandas \
-    nltk
+    "pandas" \
+    "nltk" \
+    "omegaconf>=2.3.0" \
+    "pyannote.audio==3.3.2"
 
 ENV MODEL_ID=Oriserve/Whisper-Hindi2Hinglish-Apex
 ENV ALIGN_LANGUAGE=hi
