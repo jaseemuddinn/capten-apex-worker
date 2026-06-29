@@ -1,6 +1,6 @@
 {
     "title": "Capten Apex Worker",
-    "description": "Hindi to Hinglish speech-to-text using Oriserve Apex + WhisperX forced alignment for per-word timestamps that respect silence.",
+    "description": "Hindi to Hinglish speech-to-text using Oriserve Apex + MMS forced alignment for per-word timestamps that respect silence.",
     "type": "serverless",
     "category": "audio",
     "config": {
@@ -35,12 +35,22 @@
           }
         },
         {
+          "key": "ALIGN_MODEL",
+          "input": {
+            "type": "huggingface",
+            "name": "MMS alignment model",
+            "description": "CTC forced-alignment model with Latin a-z vocabulary (default MMS 300m).",
+            "default": "MahmoudAshraf/mms-300m-1130-forced-aligner",
+            "required": false
+          }
+        },
+        {
           "key": "ALIGN_LANGUAGE",
           "input": {
             "type": "text",
             "name": "Alignment language",
-            "description": "WhisperX wav2vec2 language for forced alignment (hi for Hindi speech).",
-            "default": "hi",
+            "description": "ISO 639-3 code for MMS text normalization (hin for Hindi speech + Latin Hinglish text).",
+            "default": "hin",
             "required": false
           }
         },
@@ -48,7 +58,7 @@
           "key": "ENABLE_ALIGNMENT",
           "input": {
             "type": "text",
-            "name": "Enable WhisperX alignment",
+            "name": "Enable MMS alignment",
             "description": "Set to false to skip pass-2 alignment (Apex chunk timestamps only).",
             "default": "true",
             "required": false

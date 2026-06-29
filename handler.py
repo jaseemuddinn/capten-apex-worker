@@ -2,25 +2,29 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v7"
+WORKER_BUILD_ID = "cu128-v8"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
-ALIGN_LANGUAGE = os.getenv("ALIGN_LANGUAGE", "hi")
+ALIGN_MODEL = os.getenv(
+    "ALIGN_MODEL", "MahmoudAshraf/mms-300m-1130-forced-aligner"
+)
+# ISO 639-3 — MMS forced aligner vocabulary is Latin a–z; works with Apex Hinglish text.
+ALIGN_LANGUAGE = os.getenv("ALIGN_LANGUAGE", "hin")
 ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "true").lower() not in (
     "0",
     "false",
     "no",
 )
+MMS_BATCH_SIZE = int(os.getenv("MMS_BATCH_SIZE", "4"))
 
 _pipe = None
-_align_model = None
-_align_metadata = None
+_mms_model = None
+_mms_tokenizer = None
 _resolved_device: str | None = None
 
 
@@ -160,20 +164,30 @@ def load_pipeline():
     return _pipe
 
 
-def load_align_model():
-    """WhisperX wav2vec2 forced-alignment model (lazy, cached)."""
-    global _align_model, _align_metadata
-    if _align_model is not None:
-        return _align_model, _align_metadata
+def load_mms_align_model():
+    """MMS CTC forced-alignment model (lazy, cached)."""
+    global _mms_model, _mms_tokenizer
+    if _mms_model is not None:
+        return _mms_model, _mms_tokenizer
 
-    from whisperx.alignment import load_align_model as wx_load_align_model
+    import torch
+    from ctc_forced_aligner import load_alignment_model
 
     device = device_name()
-    _align_model, _align_metadata = wx_load_align_model(
-        language_code=ALIGN_LANGUAGE,
-        device=device,
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    local_path = resolve_snapshot_path(ALIGN_MODEL)
+    model_source = local_path or ALIGN_MODEL
+
+    if local_path:
+        print(f"[align] using cached MMS snapshot {local_path}", flush=True)
+
+    _mms_model, _mms_tokenizer = load_alignment_model(
+        device,
+        model_path=model_source,
+        dtype=dtype,
     )
-    return _align_model, _align_metadata
+    print("[align] MMS model ready", flush=True)
+    return _mms_model, _mms_tokenizer
 
 
 def load_audio_bytes(job_input: dict) -> bytes:
@@ -223,100 +237,72 @@ def run_transcription(pipe, sample: dict) -> dict:
     return pipe(sample, chunk_length_s=30, batch_size=4)
 
 
-def apex_chunks_to_segments(chunks: list, text: str, duration: float) -> list[dict]:
-    """Build coarse segments from Apex chunks for WhisperX forced alignment."""
-    segments: list[dict] = []
-
-    for chunk in chunks or []:
-        chunk_text = (chunk.get("text") or "").strip()
-        ts = chunk.get("timestamp")
-        if not chunk_text:
-            continue
-        if ts and ts[0] is not None:
-            start = float(ts[0])
-            end = float(ts[1] if ts[1] is not None else ts[0] + 0.3)
-        else:
-            continue
-        segments.append({"text": chunk_text, "start": start, "end": max(end, start + 0.05)})
-
-    if segments:
-        return segments
-
-    return text_to_segments(text, duration)
-
-
-def text_to_segments(text: str, duration: float) -> list[dict]:
-    """Fallback segment split when Apex returns no chunk timestamps."""
-    raw = text.strip()
-    if not raw or duration <= 0:
-        return []
-
-    parts = re.split(r"(?<=[.!?।])\s+", raw)
-    parts = [p.strip() for p in parts if p.strip()]
-    if len(parts) == 1 and len(raw) > 100:
-        parts = [p.strip() for p in re.split(r",\s+", raw) if p.strip()]
-    if not parts:
-        parts = [raw]
-
-    total = sum(max(len(p), 1) for p in parts)
-    segments: list[dict] = []
-    t = 0.0
-    for part in parts:
-        share = max(len(part), 1) / total
-        end = min(t + duration * share, duration)
-        if end <= t:
-            end = min(t + 0.25, duration)
-        segments.append({"text": part, "start": t, "end": end})
-        t = end
-
-    if segments:
-        segments[-1]["end"] = duration
-    return segments
-
-
-def align_segments_to_words(audio, segments: list[dict], device: str) -> list[dict]:
-    """Pass 2: forced phoneme alignment — per-word times that respect silence."""
-    from whisperx.alignment import align as wx_align
-
-    if not segments:
-        return []
-
-    model_a, metadata = load_align_model()
-    aligned = wx_align(
-        segments,
-        model_a,
-        metadata,
-        audio,
-        device,
-        return_char_alignments=False,
+def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
+    """Pass 2: MMS forced alignment of full Apex text → per-word times with silence gaps."""
+    import torch
+    from ctc_forced_aligner import (
+        generate_emissions,
+        get_alignments,
+        get_spans,
+        postprocess_results,
+        preprocess_text,
     )
-    return aligned_segments_to_words(aligned)
 
+    cleaned = text.strip()
+    if not cleaned:
+        return []
 
-def aligned_segments_to_words(aligned: dict) -> list[dict]:
+    model, tokenizer = load_mms_align_model()
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    waveform = torch.from_numpy(audio).float()
+    if waveform.dim() > 1:
+        waveform = waveform.squeeze()
+    waveform = waveform.to(device=device, dtype=dtype)
+
+    emissions, stride = generate_emissions(
+        model,
+        waveform,
+        batch_size=MMS_BATCH_SIZE,
+    )
+
+    tokens_starred, text_starred = preprocess_text(
+        cleaned,
+        romanize=True,
+        language=ALIGN_LANGUAGE,
+    )
+
+    segments, scores, blank_token = get_alignments(
+        emissions,
+        tokens_starred,
+        tokenizer,
+    )
+    spans = get_spans(tokens_starred, segments, blank_token)
+    word_timestamps = postprocess_results(text_starred, spans, stride, scores)
+
     words: list[dict] = []
-    for seg in aligned.get("segments") or []:
-        for w in seg.get("words") or []:
-            token = (w.get("word") or "").strip()
-            if not token:
-                continue
-            start = w.get("start")
-            if start is None:
-                continue
-            start = float(start)
-            end = w.get("end")
-            end = float(end) if end is not None else start + 0.15
-            if end <= start:
-                end = start + 0.1
-            score = w.get("score")
-            words.append(
-                {
-                    "word": token,
-                    "start": round(start, 3),
-                    "end": round(end, 3),
-                    "confidence": round(float(score), 3) if score is not None else 0.92,
-                }
-            )
+    for wt in word_timestamps:
+        token = (wt.get("text") or "").strip()
+        if not token:
+            continue
+        start = float(wt["start"])
+        end = float(wt["end"])
+        if end <= start:
+            end = start + 0.1
+        score = wt.get("score")
+        if score is not None:
+            span_frames = max((end - start) * 50, 1.0)
+            confidence = min(max(float(score) / span_frames, 0.5), 0.99)
+        else:
+            confidence = 0.92
+        words.append(
+            {
+                "word": token,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "confidence": round(confidence, 3),
+            }
+        )
 
     words.sort(key=lambda x: x["start"])
     return words
@@ -400,6 +386,7 @@ def handler(job):
             "cuda_runtime": torch.version.cuda,
             "cuda_available": torch.cuda.is_available(),
             "model": MODEL_ID,
+            "align_model": ALIGN_MODEL,
             "alignment_default": ENABLE_ALIGNMENT,
         }
         if torch.cuda.is_available():
@@ -426,21 +413,22 @@ def handler(job):
     result = run_transcription(pipe, sample)
     text = (result.get("text") or "").strip()
     chunks = result.get("chunks") or []
-    segments = apex_chunks_to_segments(chunks, text, duration)
 
     words: list[dict] = []
     alignment = "disabled"
     do_align = alignment_enabled(job_input)
 
-    if do_align and segments:
+    if do_align and text:
         try:
             if device == "cuda":
                 torch.cuda.empty_cache()
-            words = align_segments_to_words(audio, segments, device)
-            alignment = "whisperx" if words else "whisperx_empty"
+            words = align_text_to_words_mms(audio, text, device)
+            alignment = "mms" if words else "mms_empty"
+            if words:
+                print(f"[align] MMS ok words={len(words)}", flush=True)
         except Exception as exc:
-            alignment = f"whisperx_failed:{type(exc).__name__}"
-            print(f"[align] WhisperX alignment failed: {exc}")
+            alignment = f"mms_failed:{type(exc).__name__}"
+            print(f"[align] MMS alignment failed: {exc}", flush=True)
 
     if not words:
         words = chunks_to_words(chunks)
@@ -461,6 +449,7 @@ def handler(job):
         "device": device,
         "alignment": alignment,
         "align_language": ALIGN_LANGUAGE,
+        "align_model": ALIGN_MODEL,
     }
 
 
