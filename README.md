@@ -47,6 +47,7 @@ Capten also sends `url`, `audio`, and `data:audio/wav;base64,...` formats.
 
 ## Capten `.env`
 
+
 ```env
 GPU_MODE=runpod
 RUNPOD_API_KEY=rpa_...
