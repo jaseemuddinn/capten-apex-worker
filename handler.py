@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v3"
+WORKER_BUILD_ID = "cu128-v4"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -110,7 +110,7 @@ def resolve_snapshot_path(model_id: str) -> str | None:
     return None
 
 
-def hub_cache_roots() -> list[Path]:
+def load_pipeline():
     global _pipe
     if _pipe is not None:
         return _pipe
