@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import os
+import traceback
 from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v9"
+WORKER_BUILD_ID = "cu128-v10"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -20,7 +21,18 @@ ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "true").lower() not in (
     "false",
     "no",
 )
-MMS_BATCH_SIZE = int(os.getenv("MMS_BATCH_SIZE", "4"))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        print(f"[config] invalid {name}={raw!r}, using {default}", flush=True)
+        return default
+
+
+MMS_BATCH_SIZE = _env_int("MMS_BATCH_SIZE", 4)
 
 _pipe = None
 _mms_model = None
@@ -130,8 +142,6 @@ def load_pipeline():
     model_source = local_path or MODEL_ID
 
     if local_path:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
         print(f"[load] using cached snapshot {local_path}", flush=True)
 
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -171,20 +181,28 @@ def load_mms_align_model():
         return _mms_model, _mms_tokenizer
 
     import torch
-    from ctc_forced_aligner import load_alignment_model
+    from transformers import AutoModelForCTC, AutoTokenizer
 
     device = device_name()
     dtype = torch.float16 if device == "cuda" else torch.float32
     local_path = resolve_snapshot_path(ALIGN_MODEL)
     model_source = local_path or ALIGN_MODEL
+    offline = bool(local_path)
 
     if local_path:
         print(f"[align] using cached MMS snapshot {local_path}", flush=True)
+    elif not offline:
+        print(f"[align] downloading MMS model {ALIGN_MODEL}", flush=True)
 
-    _mms_model, _mms_tokenizer = load_alignment_model(
-        device,
-        model_path=model_source,
-        dtype=dtype,
+    # Load directly — ctc_forced_aligner's wrapper uses `dtype=` which breaks on transformers 4.46+.
+    _mms_model = AutoModelForCTC.from_pretrained(
+        model_source,
+        torch_dtype=dtype,
+        local_files_only=offline,
+    ).to(device).eval()
+    _mms_tokenizer = AutoTokenizer.from_pretrained(
+        model_source,
+        local_files_only=offline,
     )
     print("[align] MMS model ready", flush=True)
     return _mms_model, _mms_tokenizer
@@ -266,11 +284,18 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
         batch_size=MMS_BATCH_SIZE,
     )
 
+    # Apex already outputs Latin Hinglish — romanize=False char-splits each word for the MMS vocab.
     tokens_starred, text_starred = preprocess_text(
         cleaned,
-        romanize=True,
+        romanize=False,
         language=ALIGN_LANGUAGE,
+        star_frequency="edges",
     )
+
+    content_tokens = [t for t in tokens_starred if t != "<star>"]
+    if not content_tokens:
+        print("[align] MMS preprocess produced no alignable tokens", flush=True)
+        return []
 
     segments, scores, blank_token = get_alignments(
         emissions,
@@ -278,6 +303,12 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
         tokenizer,
     )
     spans = get_spans(tokens_starred, segments, blank_token)
+
+    if len(spans) != len(text_starred):
+        raise ValueError(
+            f"MMS span count {len(spans)} != text token count {len(text_starred)}"
+        )
+
     word_timestamps = postprocess_results(text_starred, spans, stride, scores)
 
     words: list[dict] = []
@@ -387,6 +418,7 @@ def handler(job):
             "cuda_available": torch.cuda.is_available(),
             "model": MODEL_ID,
             "align_model": ALIGN_MODEL,
+            "align_language": ALIGN_LANGUAGE,
             "alignment_default": ENABLE_ALIGNMENT,
         }
         if torch.cuda.is_available():
@@ -410,6 +442,20 @@ def handler(job):
     duration = len(sample["array"]) / sample["sampling_rate"]
     audio = np.asarray(sample["array"], dtype=np.float32)
 
+    if duration <= 0:
+        return {
+            "text": "",
+            "words": [],
+            "segments": [{"text": "", "start": 0.0, "end": 0.0}],
+            "language": "HINGLISH",
+            "model": MODEL_ID,
+            "build": WORKER_BUILD_ID,
+            "device": device,
+            "alignment": "empty_audio",
+            "align_language": ALIGN_LANGUAGE,
+            "align_model": ALIGN_MODEL,
+        }
+
     result = run_transcription(pipe, sample)
     text = (result.get("text") or "").strip()
     chunks = result.get("chunks") or []
@@ -429,6 +475,7 @@ def handler(job):
         except Exception as exc:
             alignment = f"mms_failed:{type(exc).__name__}"
             print(f"[align] MMS alignment failed: {exc}", flush=True)
+            traceback.print_exc()
 
     if not words:
         words = chunks_to_words(chunks)

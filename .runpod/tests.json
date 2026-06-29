@@ -25,6 +25,10 @@
           "value": "Oriserve/Whisper-Hindi2Hinglish-Apex"
         },
         {
+          "key": "ALIGN_MODEL",
+          "value": "MahmoudAshraf/mms-300m-1130-forced-aligner"
+        },
+        {
           "key": "ALIGN_LANGUAGE",
           "value": "hin"
         },
