@@ -7,7 +7,8 @@ from pathlib import Path
 
 import runpod
 
-print("[startup] capten apex worker", flush=True)
+WORKER_BUILD_ID = "cu128-v3"
+print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
 ALIGN_LANGUAGE = os.getenv("ALIGN_LANGUAGE", "hi")
@@ -20,6 +21,60 @@ ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "true").lower() not in (
 _pipe = None
 _align_model = None
 _align_metadata = None
+_resolved_device: str | None = None
+
+
+def force_cpu() -> bool:
+    return os.getenv("FORCE_CPU", "").lower() in ("1", "true", "yes")
+
+
+def cuda_kernels_ok() -> bool:
+    """True when this PyTorch build can run fp16 kernels on the visible GPU."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return False
+    try:
+        name = torch.cuda.get_device_name(0)
+        cap = torch.cuda.get_device_capability(0)
+        arch_list = []
+        if hasattr(torch.cuda, "get_arch_list"):
+            try:
+                arch_list = torch.cuda.get_arch_list()
+            except Exception:
+                pass
+        torch.zeros(1, device="cuda")
+        probe = torch.zeros(8, 8, device="cuda", dtype=torch.float16)
+        torch.matmul(probe, probe)
+        torch.cuda.synchronize()
+        print(
+            f"[cuda] ok device={name} sm_{cap[0]}{cap[1]} "
+            f"torch={torch.__version__} cuda={torch.version.cuda} arch_list={arch_list}",
+            flush=True,
+        )
+        return True
+    except RuntimeError as exc:
+        print(f"[cuda] kernels unavailable: {exc}", flush=True)
+        return False
+
+
+def resolve_device() -> str:
+    """Pick cuda when kernels work; otherwise CPU (slow but always works)."""
+    global _resolved_device
+    if _resolved_device is not None:
+        return _resolved_device
+    if force_cpu():
+        _resolved_device = "cpu"
+    elif cuda_kernels_ok():
+        _resolved_device = "cuda"
+    else:
+        _resolved_device = "cpu"
+    print(f"[device] using {_resolved_device}", flush=True)
+    return _resolved_device
+
+
+def device_name() -> str:
+    return resolve_device()
 
 
 def hub_cache_roots() -> list[Path]:
@@ -55,47 +110,7 @@ def resolve_snapshot_path(model_id: str) -> str | None:
     return None
 
 
-def device_name() -> str:
-    import torch
-
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def verify_cuda() -> None:
-    """Fail fast with a clear message when PyTorch lacks kernels for this GPU."""
-    import torch
-
-    if not torch.cuda.is_available():
-        print("[cuda] GPU not visible — running on CPU")
-        return
-    name = torch.cuda.get_device_name(0)
-    cap = torch.cuda.get_device_capability(0)
-    arch_list = []
-    if hasattr(torch.cuda, "get_arch_list"):
-        try:
-            arch_list = torch.cuda.get_arch_list()
-        except Exception:
-            pass
-    print(
-        f"[cuda] device={name} sm_{cap[0]}{cap[1]} "
-        f"torch={torch.__version__} arch_list={arch_list}"
-    )
-    try:
-        # float32 smoke test
-        torch.zeros(1, device="cuda")
-        # Apex runs fp16 on GPU — catch arch mismatches that only show up in half kernels
-        probe = torch.zeros(8, 8, device="cuda", dtype=torch.float16)
-        torch.matmul(probe, probe)
-        torch.cuda.synchronize()
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"PyTorch {torch.__version__} (cuda {torch.version.cuda}) cannot run on "
-            f"{name} (sm_{cap[0]}{cap[1]}). Rebuild with cu128 torch>=2.7 "
-            "(see Dockerfile). Original: {exc}"
-        ) from exc
-
-
-def load_pipeline():
+def hub_cache_roots() -> list[Path]:
     global _pipe
     if _pipe is not None:
         return _pipe
@@ -104,7 +119,7 @@ def load_pipeline():
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
     print("[load] apex model", flush=True)
-    device = device_name()
+    device = resolve_device()
     dtype = torch.float16 if device == "cuda" else torch.float32
 
     local_path = resolve_snapshot_path(MODEL_ID)
@@ -374,10 +389,15 @@ def handler(job):
     if job_input.get("health_check"):
         import torch
 
-        verify_cuda()
+        cuda_ok = cuda_kernels_ok()
+        device = resolve_device()
         info: dict = {
             "status": "ok",
+            "build": WORKER_BUILD_ID,
+            "device": device,
+            "cuda_kernels_ok": cuda_ok,
             "torch": torch.__version__,
+            "cuda_runtime": torch.version.cuda,
             "cuda_available": torch.cuda.is_available(),
             "model": MODEL_ID,
             "alignment_default": ENABLE_ALIGNMENT,
@@ -386,17 +406,21 @@ def handler(job):
             info["gpu"] = torch.cuda.get_device_name(0)
             cap = torch.cuda.get_device_capability(0)
             info["capability"] = f"sm_{cap[0]}{cap[1]}"
+            if hasattr(torch.cuda, "get_arch_list"):
+                try:
+                    info["arch_list"] = torch.cuda.get_arch_list()
+                except Exception:
+                    pass
         return info
 
     import numpy as np
     import torch
 
-    verify_cuda()
+    device = resolve_device()
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
     sample = bytes_to_sample(audio_bytes)
     duration = len(sample["array"]) / sample["sampling_rate"]
-    device = device_name()
     audio = np.asarray(sample["array"], dtype=np.float32)
 
     result = run_transcription(pipe, sample)
@@ -433,6 +457,8 @@ def handler(job):
         "segments": build_output_segments(words, text, duration),
         "language": "HINGLISH",
         "model": MODEL_ID,
+        "build": WORKER_BUILD_ID,
+        "device": device,
         "alignment": alignment,
         "align_language": ALIGN_LANGUAGE,
     }
