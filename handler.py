@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v6"
+WORKER_BUILD_ID = "cu128-v7"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -166,10 +166,10 @@ def load_align_model():
     if _align_model is not None:
         return _align_model, _align_metadata
 
-    import whisperx
+    from whisperx.alignment import load_align_model as wx_load_align_model
 
     device = device_name()
-    _align_model, _align_metadata = whisperx.load_align_model(
+    _align_model, _align_metadata = wx_load_align_model(
         language_code=ALIGN_LANGUAGE,
         device=device,
     )
@@ -276,13 +276,13 @@ def text_to_segments(text: str, duration: float) -> list[dict]:
 
 def align_segments_to_words(audio, segments: list[dict], device: str) -> list[dict]:
     """Pass 2: forced phoneme alignment — per-word times that respect silence."""
-    import whisperx
+    from whisperx.alignment import align as wx_align
 
     if not segments:
         return []
 
     model_a, metadata = load_align_model()
-    aligned = whisperx.align(
+    aligned = wx_align(
         segments,
         model_a,
         metadata,
