@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v10"
+WORKER_BUILD_ID = "cu128-v11"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -33,6 +33,31 @@ def _env_int(name: str, default: int) -> int:
 
 
 MMS_BATCH_SIZE = _env_int("MMS_BATCH_SIZE", 4)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[config] invalid {name}={raw!r}, using {default}", flush=True)
+        return default
+
+
+# "segment" puts a wildcard before every word so pauses, breaths and music park
+# on a star instead of stretching a real word. "edges" only stars the ends,
+# which forces mid-file silence onto actual words and drifts the whole timeline.
+ALIGN_STAR_FREQUENCY = os.getenv("ALIGN_STAR_FREQUENCY", "segment")
+# Audio padding around each ASR segment before aligning it.
+ALIGN_WINDOW_PAD = _env_float("ALIGN_WINDOW_PAD", 0.35)
+# ASR segments are merged up to this length so alignment stays local (bounded
+# drift) without paying per-segment overhead on every short sentence.
+ALIGN_WINDOW_MAX_SEC = _env_float("ALIGN_WINDOW_MAX_SEC", 24.0)
+MIN_ALIGN_WINDOW_SEC = 0.2
+# Digit-only words are dropped by MMS text normalization and come back with a
+# zero-width span; give them a readable slice of the following gap instead.
+MIN_WORD_SEC = 0.04
+DEGENERATE_WORD_SEC = 0.24
 
 _pipe = None
 _mms_model = None
@@ -251,12 +276,41 @@ def bytes_to_sample(data: bytes) -> dict:
 
 
 def run_transcription(pipe, sample: dict) -> dict:
-    """Apex fine-tune has no alignment_heads — text only, chunk-level times."""
-    return pipe(sample, chunk_length_s=30, batch_size=4)
+    """Apex fine-tune has no alignment_heads, so word timings come from MMS.
+
+    Segment-level timestamps are still requested: they give the aligner local
+    audio windows to work in, which is what keeps long videos from drifting.
+    """
+    try:
+        return pipe(
+            sample,
+            chunk_length_s=30,
+            batch_size=4,
+            return_timestamps=True,
+        )
+    except Exception as exc:  # tokenizer without timestamp tokens
+        print(
+            f"[asr] segment timestamps unavailable ({type(exc).__name__}: {exc}) "
+            "— decoding text only",
+            flush=True,
+        )
+        return pipe(sample, chunk_length_s=30, batch_size=4)
 
 
-def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
-    """Pass 2: MMS forced alignment of full Apex text → per-word times with silence gaps."""
+def needs_romanize(text: str) -> bool:
+    """MMS targets a Latin a–z vocab; non-ASCII text must go through uroman.
+
+    Unknown characters are silently dropped from the CTC target, which then
+    trips an assertion in get_spans and loses the whole window.
+    """
+    return any(ord(ch) > 127 for ch in text)
+
+
+def align_window(
+    audio_slice, text: str, device: str, offset: float = 0.0
+) -> list[dict]:
+    """Forced-align `text` inside one audio window; returns absolute-time words."""
+    import numpy as np
     import torch
     from ctc_forced_aligner import (
         generate_emissions,
@@ -266,14 +320,14 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
         preprocess_text,
     )
 
-    cleaned = text.strip()
+    cleaned = " ".join(text.split())
     if not cleaned:
         return []
 
     model, tokenizer = load_mms_align_model()
     dtype = torch.float16 if device == "cuda" else torch.float32
 
-    waveform = torch.from_numpy(audio).float()
+    waveform = torch.from_numpy(np.ascontiguousarray(audio_slice)).float()
     if waveform.dim() > 1:
         waveform = waveform.squeeze()
     waveform = waveform.to(device=device, dtype=dtype)
@@ -284,12 +338,11 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
         batch_size=MMS_BATCH_SIZE,
     )
 
-    # Apex already outputs Latin Hinglish — romanize=False char-splits each word for the MMS vocab.
     tokens_starred, text_starred = preprocess_text(
         cleaned,
-        romanize=False,
+        romanize=needs_romanize(cleaned),
         language=ALIGN_LANGUAGE,
-        star_frequency="edges",
+        star_frequency=ALIGN_STAR_FREQUENCY,
     )
 
     content_tokens = [t for t in tokens_starred if t != "<star>"]
@@ -314,12 +367,10 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
     words: list[dict] = []
     for wt in word_timestamps:
         token = (wt.get("text") or "").strip()
-        if not token:
+        if not token or token == "<star>":
             continue
-        start = float(wt["start"])
-        end = float(wt["end"])
-        if end <= start:
-            end = start + 0.1
+        start = float(wt["start"]) + offset
+        end = float(wt["end"]) + offset
         score = wt.get("score")
         if score is not None:
             span_frames = max((end - start) * 50, 1.0)
@@ -329,14 +380,231 @@ def align_text_to_words_mms(audio, text: str, device: str) -> list[dict]:
         words.append(
             {
                 "word": token,
-                "start": round(start, 3),
-                "end": round(end, 3),
+                "start": start,
+                "end": end,
                 "confidence": round(confidence, 3),
             }
         )
 
-    words.sort(key=lambda x: x["start"])
     return words
+
+
+def weighted_words_in_span(text: str, start: float, end: float) -> list[dict]:
+    """Last-resort split of a span, weighted by letters so short words stay short."""
+    tokens = text.split()
+    if not tokens:
+        return []
+    span = max(end - start, MIN_WORD_SEC * len(tokens))
+    weights = [max(len(t.strip()), 1) for t in tokens]
+    total = float(sum(weights))
+
+    words: list[dict] = []
+    cursor = start
+    for token, weight in zip(tokens, weights):
+        width = span * (weight / total)
+        words.append(
+            {
+                "word": token,
+                "start": cursor,
+                "end": cursor + width,
+                "confidence": 0.6,
+            }
+        )
+        cursor += width
+    return words
+
+
+def plan_align_windows(chunks: list, total: float) -> list[dict]:
+    """Turn ASR segment timestamps into merged, ordered alignment windows."""
+    raw: list[dict] = []
+    cursor = 0.0
+
+    for chunk in chunks or []:
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            continue
+        ts = chunk.get("timestamp") or (None, None)
+        start = ts[0] if ts and ts[0] is not None else cursor
+        end = ts[1] if len(ts) > 1 and ts[1] is not None else None
+
+        start = max(0.0, min(float(start), total))
+        end = total if end is None else max(0.0, min(float(end), total))
+        if end <= start:
+            end = min(total, start + 0.3)
+        raw.append({"text": text, "start": start, "end": end})
+        cursor = end
+
+    if not raw:
+        return []
+
+    raw.sort(key=lambda s: s["start"])
+    merged: list[dict] = [dict(raw[0])]
+    for seg in raw[1:]:
+        last = merged[-1]
+        if seg["end"] - last["start"] <= ALIGN_WINDOW_MAX_SEC:
+            last["text"] = f"{last['text']} {seg['text']}".strip()
+            last["end"] = max(last["end"], seg["end"])
+        else:
+            merged.append(dict(seg))
+    return merged
+
+
+def assign_caller_text_to_chunks(text: str, chunks: list) -> list:
+    """Keep ASR window times, replace each chunk's text with a slice of caller text.
+
+    Used by Hybrid (Sarvam wording + MMS). Whole-file MMS on long audio drifts;
+    windowing from Apex segments keeps alignment local like Kalakar/WhisperX.
+    """
+    tokens = [t for t in (text or "").split() if t]
+    if not tokens or not chunks:
+        return chunks
+
+    usable: list[dict] = []
+    weights: list[float] = []
+    for chunk in chunks:
+        ts = chunk.get("timestamp") or (None, None)
+        if ts[0] is None:
+            continue
+        start = float(ts[0])
+        end = float(ts[1]) if ts[1] is not None else start + 0.3
+        weights.append(max(0.05, end - start))
+        usable.append(chunk)
+
+    if not usable:
+        return chunks
+
+    total_w = sum(weights) or 1.0
+    raw = [(w / total_w) * len(tokens) for w in weights]
+    counts = [int(v) for v in raw]
+    assigned = sum(counts)
+    order = sorted(
+        range(len(raw)),
+        key=lambda i: raw[i] - counts[i],
+        reverse=True,
+    )
+    k = 0
+    while assigned < len(tokens) and order:
+        counts[order[k % len(order)]] += 1
+        assigned += 1
+        k += 1
+
+    # Ensure every non-empty window that got 0 still can receive leftovers later.
+    out: list[dict] = []
+    idx = 0
+    for i, chunk in enumerate(usable):
+        n = counts[i]
+        if n <= 0:
+            continue
+        slice_tokens = tokens[idx : idx + n]
+        idx += n
+        if not slice_tokens:
+            continue
+        out.append({**chunk, "text": " ".join(slice_tokens)})
+
+    if idx < len(tokens):
+        leftover = " ".join(tokens[idx:])
+        if out:
+            out[-1]["text"] = f"{out[-1]['text']} {leftover}".strip()
+        else:
+            # No windows produced — fabricate one covering full span.
+            first = usable[0]
+            last = usable[-1]
+            ts0 = first.get("timestamp") or (0.0, 0.0)
+            ts1 = last.get("timestamp") or (0.0, 0.0)
+            out.append(
+                {
+                    "text": leftover,
+                    "timestamp": (ts0[0] or 0.0, ts1[1] if ts1[1] is not None else ts0[0]),
+                }
+            )
+
+    print(
+        f"[align] assigned caller text tokens={len(tokens)} windows={len(out)}",
+        flush=True,
+    )
+    return out
+
+
+def finalize_words(words: list[dict], total: float) -> list[dict]:
+    """Sort, de-overlap and give zero-width tokens a visible duration."""
+    if not words:
+        return []
+
+    ordered = sorted(words, key=lambda w: (w["start"], w["end"]))
+
+    for i, w in enumerate(ordered):
+        w["start"] = max(0.0, min(float(w["start"]), total))
+        w["end"] = max(float(w["end"]), w["start"])
+        if w["end"] - w["start"] < MIN_WORD_SEC:
+            next_start = ordered[i + 1]["start"] if i + 1 < len(ordered) else total
+            room = max(0.0, next_start - w["start"])
+            w["end"] = w["start"] + min(DEGENERATE_WORD_SEC, room or DEGENERATE_WORD_SEC)
+        w["end"] = min(w["end"], total)
+
+    for i in range(1, len(ordered)):
+        prev, cur = ordered[i - 1], ordered[i]
+        if cur["start"] < prev["end"]:
+            cur["start"] = prev["end"]
+            if cur["end"] < cur["start"]:
+                cur["end"] = cur["start"]
+
+    out: list[dict] = []
+    for w in ordered:
+        if w["end"] - w["start"] <= 0:
+            continue
+        out.append(
+            {
+                "word": w["word"],
+                "start": round(w["start"], 3),
+                "end": round(w["end"], 3),
+                "confidence": w.get("confidence", 0.9),
+            }
+        )
+    return out
+
+
+def align_transcript(audio, sr: int, text: str, chunks: list, device: str):
+    """Align per ASR segment when possible, else one whole-file pass.
+
+    Windowing keeps a bad stretch of audio from shifting every later word and
+    isolates alignment failures to the segment that caused them.
+    """
+    total = len(audio) / float(sr)
+    windows = plan_align_windows(chunks, total)
+
+    if windows:
+        words: list[dict] = []
+        failed = 0
+        for win in windows:
+            w0 = max(0.0, win["start"] - ALIGN_WINDOW_PAD)
+            w1 = min(total, win["end"] + ALIGN_WINDOW_PAD)
+            if w1 - w0 < MIN_ALIGN_WINDOW_SEC:
+                continue
+            audio_slice = audio[int(w0 * sr) : int(w1 * sr)]
+            try:
+                aligned = align_window(audio_slice, win["text"], device, w0)
+            except Exception as exc:
+                failed += 1
+                print(
+                    f"[align] window {w0:.2f}-{w1:.2f}s failed "
+                    f"({type(exc).__name__}: {exc}) — weighted split",
+                    flush=True,
+                )
+                aligned = weighted_words_in_span(
+                    win["text"], win["start"], win["end"]
+                )
+            words.extend(aligned)
+
+        if words:
+            source = "mms_segments" if not failed else f"mms_segments_partial:{failed}"
+            print(
+                f"[align] windows={len(windows)} failed={failed} words={len(words)}",
+                flush=True,
+            )
+            return finalize_words(words, total), source
+
+    words = align_window(audio, text, device, 0.0)
+    return finalize_words(words, total), "mms" if words else "mms_empty"
 
 
 def chunks_to_words(chunks: list) -> list[dict]:
@@ -436,6 +704,10 @@ def handler(job):
     import torch
 
     device = resolve_device()
+    # Caller-supplied text (e.g. Sarvam) is MMS-aligned; Apex still provides windows.
+    align_text = job_input.get("align_text")
+    align_text = align_text.strip() if isinstance(align_text, str) else ""
+
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
     sample = bytes_to_sample(audio_bytes)
@@ -456,9 +728,20 @@ def handler(job):
             "align_model": ALIGN_MODEL,
         }
 
-    result = run_transcription(pipe, sample)
-    text = (result.get("text") or "").strip()
-    chunks = result.get("chunks") or []
+    if align_text:
+        text = align_text
+        # Still run ASR for segment *windows* only — caller text is what we align.
+        # Without windows, MMS on long files drifts (the old Hybrid failure mode).
+        asr = run_transcription(pipe, sample)
+        chunks = assign_caller_text_to_chunks(text, asr.get("chunks") or [])
+        print(
+            f"[asr] windows from Apex, text from caller ({len(text)} chars)",
+            flush=True,
+        )
+    else:
+        result = run_transcription(pipe, sample)
+        text = (result.get("text") or "").strip()
+        chunks = result.get("chunks") or []
 
     words: list[dict] = []
     alignment = "disabled"
@@ -468,14 +751,18 @@ def handler(job):
         try:
             if device == "cuda":
                 torch.cuda.empty_cache()
-            words = align_text_to_words_mms(audio, text, device)
-            alignment = "mms" if words else "mms_empty"
+            words, alignment = align_transcript(
+                audio, sample["sampling_rate"], text, chunks, device
+            )
             if words:
-                print(f"[align] MMS ok words={len(words)}", flush=True)
+                print(f"[align] {alignment} words={len(words)}", flush=True)
         except Exception as exc:
             alignment = f"mms_failed:{type(exc).__name__}"
             print(f"[align] MMS alignment failed: {exc}", flush=True)
             traceback.print_exc()
+
+    if align_text and words:
+        alignment = f"{alignment}+provided_text"
 
     if not words:
         words = chunks_to_words(chunks)
