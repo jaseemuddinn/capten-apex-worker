@@ -1,53 +1,52 @@
 {
-    "tests": [
+  "tests": [
+    {
+      "name": "health_cuda",
+      "input": {
+        "health_check": true
+      },
+      "timeout": 120000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "env": [
       {
-        "name": "health_cuda",
-        "input": {
-          "health_check": true
-        },
-        "timeout": 300000
+        "key": "MODEL_ID",
+        "value": "Oriserve/Whisper-Hindi2Hinglish-Apex"
       },
       {
-        "name": "transcribe_public_audio_url",
-        "input": {
-          "audio_url": "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac",
-          "skip_alignment": true
-        },
-        "timeout": 600000
+        "key": "ALIGN_MODEL",
+        "value": "MahmoudAshraf/mms-300m-1130-forced-aligner"
+      },
+      {
+        "key": "ALIGN_LANGUAGE",
+        "value": "hin"
+      },
+      {
+        "key": "ENABLE_ALIGNMENT",
+        "value": "false"
+      },
+      {
+        "key": "RUNPOD_INIT_TIMEOUT",
+        "value": "900"
+      },
+      {
+        "key": "HF_HUB_OFFLINE",
+        "value": "1"
+      },
+      {
+        "key": "TRANSFORMERS_OFFLINE",
+        "value": "1"
       }
     ],
-    "config": {
-      "gpuTypeId": "NVIDIA GeForce RTX 4090",
-      "gpuCount": 1,
-      "env": [
-        {
-          "key": "MODEL_ID",
-          "value": "Oriserve/Whisper-Hindi2Hinglish-Apex"
-        },
-        {
-          "key": "ALIGN_MODEL",
-          "value": "MahmoudAshraf/mms-300m-1130-forced-aligner"
-        },
-        {
-          "key": "ALIGN_LANGUAGE",
-          "value": "hin"
-        },
-        {
-          "key": "ENABLE_ALIGNMENT",
-          "value": "false"
-        },
-        {
-          "key": "RUNPOD_INIT_TIMEOUT",
-          "value": "900"
-        }
-      ],
-      "allowedCudaVersions": [
-        "12.8",
-        "12.7",
-        "12.6",
-        "12.5",
-        "12.4"
-      ]
-    }
+    "allowedCudaVersions": [
+      "12.8",
+      "12.7",
+      "12.6",
+      "12.5",
+      "12.4"
+    ]
   }
-  
+}

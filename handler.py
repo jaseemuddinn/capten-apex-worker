@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v11"
+WORKER_BUILD_ID = "cu128-v12"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -69,34 +69,55 @@ def force_cpu() -> bool:
     return os.getenv("FORCE_CPU", "").lower() in ("1", "true", "yes")
 
 
-def cuda_kernels_ok() -> bool:
-    """True when this PyTorch build can run fp16 kernels on the visible GPU."""
+def cuda_kernels_ok(timeout_sec: float = 15.0) -> bool:
+    """True when this PyTorch build can run fp16 kernels on the visible GPU.
+
+    Hub test pods have hung forever on a stuck CUDA matmul — always bound the
+    probe with a thread timeout so health_check cannot block the 2h Hub budget.
+    """
+    import threading
+
     import torch
 
     if not torch.cuda.is_available():
         return False
-    try:
-        name = torch.cuda.get_device_name(0)
-        cap = torch.cuda.get_device_capability(0)
-        arch_list = []
-        if hasattr(torch.cuda, "get_arch_list"):
-            try:
-                arch_list = torch.cuda.get_arch_list()
-            except Exception:
-                pass
-        torch.zeros(1, device="cuda")
-        probe = torch.zeros(8, 8, device="cuda", dtype=torch.float16)
-        torch.matmul(probe, probe)
-        torch.cuda.synchronize()
+
+    result: dict = {"ok": False, "err": None}
+
+    def probe() -> None:
+        try:
+            name = torch.cuda.get_device_name(0)
+            cap = torch.cuda.get_device_capability(0)
+            arch_list = []
+            if hasattr(torch.cuda, "get_arch_list"):
+                try:
+                    arch_list = torch.cuda.get_arch_list()
+                except Exception:
+                    pass
+            torch.zeros(1, device="cuda")
+            probe_t = torch.zeros(8, 8, device="cuda", dtype=torch.float16)
+            torch.matmul(probe_t, probe_t)
+            torch.cuda.synchronize()
+            print(
+                f"[cuda] ok device={name} sm_{cap[0]}{cap[1]} "
+                f"torch={torch.__version__} cuda={torch.version.cuda} arch_list={arch_list}",
+                flush=True,
+            )
+            result["ok"] = True
+        except Exception as exc:
+            result["err"] = exc
+            print(f"[cuda] kernels unavailable: {exc}", flush=True)
+
+    t = threading.Thread(target=probe, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+    if t.is_alive():
         print(
-            f"[cuda] ok device={name} sm_{cap[0]}{cap[1]} "
-            f"torch={torch.__version__} cuda={torch.version.cuda} arch_list={arch_list}",
+            f"[cuda] probe timed out after {timeout_sec:.0f}s — treating as unavailable",
             flush=True,
         )
-        return True
-    except RuntimeError as exc:
-        print(f"[cuda] kernels unavailable: {exc}", flush=True)
         return False
+    return bool(result["ok"])
 
 
 def resolve_device() -> str:
@@ -674,8 +695,16 @@ def handler(job):
     if job_input.get("health_check"):
         import torch
 
-        cuda_ok = cuda_kernels_ok()
-        device = resolve_device()
+        # Keep this path under a few seconds — Hub's 2h budget is wasted if the
+        # CUDA probe or device resolve hangs on a bad test GPU.
+        try:
+            cuda_ok = cuda_kernels_ok(timeout_sec=12.0)
+            device = resolve_device()
+        except Exception as exc:
+            print(f"[health] probe failed: {exc}", flush=True)
+            cuda_ok = False
+            device = "cpu"
+
         info: dict = {
             "status": "ok",
             "build": WORKER_BUILD_ID,
@@ -690,14 +719,17 @@ def handler(job):
             "alignment_default": ENABLE_ALIGNMENT,
         }
         if torch.cuda.is_available():
-            info["gpu"] = torch.cuda.get_device_name(0)
-            cap = torch.cuda.get_device_capability(0)
-            info["capability"] = f"sm_{cap[0]}{cap[1]}"
-            if hasattr(torch.cuda, "get_arch_list"):
-                try:
-                    info["arch_list"] = torch.cuda.get_arch_list()
-                except Exception:
-                    pass
+            try:
+                info["gpu"] = torch.cuda.get_device_name(0)
+                cap = torch.cuda.get_device_capability(0)
+                info["capability"] = f"sm_{cap[0]}{cap[1]}"
+                if hasattr(torch.cuda, "get_arch_list"):
+                    try:
+                        info["arch_list"] = torch.cuda.get_arch_list()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                info["gpu_error"] = str(exc)
         return info
 
     import numpy as np

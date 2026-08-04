@@ -32,9 +32,13 @@ ENV ENABLE_ALIGNMENT=true
 ENV HF_HOME=/root/.cache/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
 ENV RUNPOD_INIT_TIMEOUT=900
+# Prefer image-baked weights; fail fast instead of hanging Hub tests on HF.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 
 COPY cache_model.py .
-RUN python cache_model.py
+# Download while online, then lock offline for runtime.
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python cache_model.py
 
 COPY handler.py .
 
