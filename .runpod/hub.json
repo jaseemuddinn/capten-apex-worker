@@ -1,70 +1,69 @@
 {
-    "title": "Capten Apex Worker",
-    "description": "Hindi to Hinglish speech-to-text using Oriserve Apex + MMS forced alignment for per-word timestamps that respect silence.",
-    "type": "serverless",
-    "category": "audio",
-    "config": {
-      "runsOn": "GPU",
-      "containerDiskInGb": 25,
-      "gpuCount": 1,
-      "gpuIds": "ADA_24,AMPERE_24,AMPERE_16",
-      "allowedCudaVersions": [
-        "12.8",
-        "12.7",
-        "12.6",
-        "12.5",
-        "12.4"
-      ],
-      "presets": [
-        {
-          "name": "Hinglish Apex (default)",
-          "defaults": {
-            "MODEL_ID": "Oriserve/Whisper-Hindi2Hinglish-Apex"
-          }
+  "title": "Capten Apex Worker",
+  "description": "Hindi to Hinglish speech-to-text using Oriserve Apex + MMS forced alignment for per-word timestamps that respect silence.",
+  "type": "serverless",
+  "category": "audio",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 50,
+    "gpuCount": 1,
+    "gpuIds": "ADA_24,AMPERE_24,AMPERE_16",
+    "allowedCudaVersions": [
+      "12.8",
+      "12.7",
+      "12.6",
+      "12.5",
+      "12.4"
+    ],
+    "presets": [
+      {
+        "name": "Hinglish Apex (default)",
+        "defaults": {
+          "MODEL_ID": "Oriserve/Whisper-Hindi2Hinglish-Apex"
         }
-      ],
-      "env": [
-        {
-          "key": "MODEL_ID",
-          "input": {
-            "type": "huggingface",
-            "name": "Whisper Hinglish model",
-            "description": "Hugging Face model ID. Default is Oriserve Apex for Hindi to Hinglish transcription.",
-            "default": "Oriserve/Whisper-Hindi2Hinglish-Apex",
-            "required": true
-          }
-        },
-        {
-          "key": "ALIGN_MODEL",
-          "input": {
-            "type": "huggingface",
-            "name": "MMS alignment model",
-            "description": "CTC forced-alignment model with Latin a-z vocabulary (default MMS 300m).",
-            "default": "MahmoudAshraf/mms-300m-1130-forced-aligner",
-            "required": false
-          }
-        },
-        {
-          "key": "ALIGN_LANGUAGE",
-          "input": {
-            "type": "text",
-            "name": "Alignment language",
-            "description": "ISO 639-3 code for MMS text normalization (hin for Hindi speech + Latin Hinglish text).",
-            "default": "hin",
-            "required": false
-          }
-        },
-        {
-          "key": "ENABLE_ALIGNMENT",
-          "input": {
-            "type": "text",
-            "name": "Enable MMS alignment",
-            "description": "Set to false to skip pass-2 alignment (Apex chunk timestamps only).",
-            "default": "true",
-            "required": false
-          }
+      }
+    ],
+    "env": [
+      {
+        "key": "MODEL_ID",
+        "input": {
+          "type": "huggingface",
+          "name": "Whisper Hinglish model",
+          "description": "Hugging Face model ID. Default is Oriserve Apex for Hindi to Hinglish transcription.",
+          "default": "Oriserve/Whisper-Hindi2Hinglish-Apex",
+          "required": true
         }
-      ]
-    }
+      },
+      {
+        "key": "ALIGN_MODEL",
+        "input": {
+          "type": "huggingface",
+          "name": "MMS alignment model",
+          "description": "CTC forced-alignment model with Latin a-z vocabulary (default MMS 300m).",
+          "default": "MahmoudAshraf/mms-300m-1130-forced-aligner",
+          "required": false
+        }
+      },
+      {
+        "key": "ALIGN_LANGUAGE",
+        "input": {
+          "type": "text",
+          "name": "Alignment language",
+          "description": "ISO 639-3 code for MMS text normalization (hin for Hindi speech + Latin Hinglish text).",
+          "default": "hin",
+          "required": false
+        }
+      },
+      {
+        "key": "ENABLE_ALIGNMENT",
+        "input": {
+          "type": "text",
+          "name": "Enable MMS alignment",
+          "description": "Set to false to skip pass-2 alignment (Apex chunk timestamps only).",
+          "default": "true",
+          "required": false
+        }
+      }
+    ]
   }
-  
+}

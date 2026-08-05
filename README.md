@@ -35,15 +35,17 @@ Capten also sends `url`, `audio`, and `data:audio/wav;base64,...` formats.
 ## Deploy on RunPod Hub
 
 1. Push this repo to GitHub.
-2. Ensure `.runpod/handler.py`, `Dockerfile`, `hub.json`, and `tests.json` are present.
-3. Create a **GitHub Release** (Hub indexes releases).
-4. RunPod Console → Hub → Add your repo.
+2. Ensure `.runpod/Dockerfile`, `.runpod/hub.json`, and `.runpod/tests.json` are present (handler lives at repo-root `handler.py`).
+3. Create a **GitHub Release** (Hub indexes releases — rebuilds from the release tag).
+4. RunPod Console → Hub → rebuild the endpoint.
+
+If Hub logs stall on **Waiting for container startup**, you need `cu128-v13+` (`ENTRYPOINT []` + 50 GB disk). Confirm health returns `"build": "cu128-v13"`.
 
 ## Deploy manually
 
 1. New Serverless Endpoint → import from GitHub or Docker registry.
 2. Set **Model** to `Oriserve/Whisper-Hindi2Hinglish-Apex` for cached cold starts.
-3. GPU: 16 GB+, container disk: 20 GB.
+3. GPU: 16 GB+, container disk: **50 GB** (Apex + MMS baked into the image).
 
 ## Capten `.env`
 

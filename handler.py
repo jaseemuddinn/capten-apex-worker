@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v12"
+WORKER_BUILD_ID = "cu128-v13"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -693,43 +693,52 @@ def handler(job):
     job_input = job["input"]
 
     if job_input.get("health_check"):
-        import torch
-
-        # Keep this path under a few seconds — Hub's 2h budget is wasted if the
-        # CUDA probe or device resolve hangs on a bad test GPU.
-        try:
-            cuda_ok = cuda_kernels_ok(timeout_sec=12.0)
-            device = resolve_device()
-        except Exception as exc:
-            print(f"[health] probe failed: {exc}", flush=True)
-            cuda_ok = False
-            device = "cpu"
-
+        # Ultra-fast path first so Hub marks the worker alive even if torch/CUDA
+        # init is slow or wedged on the test GPU.
         info: dict = {
             "status": "ok",
             "build": WORKER_BUILD_ID,
-            "device": device,
-            "cuda_kernels_ok": cuda_ok,
-            "torch": torch.__version__,
-            "cuda_runtime": torch.version.cuda,
-            "cuda_available": torch.cuda.is_available(),
             "model": MODEL_ID,
             "align_model": ALIGN_MODEL,
             "align_language": ALIGN_LANGUAGE,
             "alignment_default": ENABLE_ALIGNMENT,
         }
-        if torch.cuda.is_available():
+        try:
+            import torch
+
             try:
-                info["gpu"] = torch.cuda.get_device_name(0)
-                cap = torch.cuda.get_device_capability(0)
-                info["capability"] = f"sm_{cap[0]}{cap[1]}"
-                if hasattr(torch.cuda, "get_arch_list"):
-                    try:
-                        info["arch_list"] = torch.cuda.get_arch_list()
-                    except Exception:
-                        pass
+                cuda_ok = cuda_kernels_ok(timeout_sec=8.0)
+                device = resolve_device()
             except Exception as exc:
-                info["gpu_error"] = str(exc)
+                print(f"[health] probe failed: {exc}", flush=True)
+                cuda_ok = False
+                device = "cpu"
+
+            info.update(
+                {
+                    "device": device,
+                    "cuda_kernels_ok": cuda_ok,
+                    "torch": torch.__version__,
+                    "cuda_runtime": torch.version.cuda,
+                    "cuda_available": torch.cuda.is_available(),
+                }
+            )
+            if torch.cuda.is_available():
+                try:
+                    info["gpu"] = torch.cuda.get_device_name(0)
+                    cap = torch.cuda.get_device_capability(0)
+                    info["capability"] = f"sm_{cap[0]}{cap[1]}"
+                    if hasattr(torch.cuda, "get_arch_list"):
+                        try:
+                            info["arch_list"] = torch.cuda.get_arch_list()
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    info["gpu_error"] = str(exc)
+        except Exception as exc:
+            print(f"[health] torch import failed: {exc}", flush=True)
+            info["device"] = "unknown"
+            info["torch_error"] = str(exc)
         return info
 
     import numpy as np

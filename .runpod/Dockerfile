@@ -35,6 +35,8 @@ ENV RUNPOD_INIT_TIMEOUT=900
 # Prefer image-baked weights; fail fast instead of hanging Hub tests on HF.
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
+# Avoid NVIDIA base entrypoint hanging Hub "Waiting for container startup".
+ENV NVIDIA_DISABLE_REQUIRE=1
 
 COPY cache_model.py .
 # Download while online, then lock offline for runtime.
@@ -42,4 +44,8 @@ RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python cache_model.py
 
 COPY handler.py .
 
+# CRITICAL: pytorch/nvidia images ship an entrypoint that can block forever on
+# GPU/driver checks. Hub then sits on "Waiting for container startup" for hours.
+# Clear it so we go straight to the RunPod handler.
+ENTRYPOINT []
 CMD ["python", "-u", "handler.py"]
