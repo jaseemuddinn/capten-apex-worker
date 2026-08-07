@@ -32,20 +32,19 @@ ENV ENABLE_ALIGNMENT=true
 ENV HF_HOME=/root/.cache/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
 ENV RUNPOD_INIT_TIMEOUT=900
-# Prefer image-baked weights; fail fast instead of hanging Hub tests on HF.
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+ENV PYTHONUNBUFFERED=1
 # Avoid NVIDIA base entrypoint hanging Hub "Waiting for container startup".
 ENV NVIDIA_DISABLE_REQUIRE=1
+# Do NOT set HF_HUB_OFFLINE globally — Hub test pods and cold starts must be
+# able to fall back to the hub if the baked snapshot path is missing.
 
 COPY cache_model.py .
-# Download while online, then lock offline for runtime.
 RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python cache_model.py
 
-COPY handler.py .
+COPY handler.py start.sh ./
+RUN chmod +x start.sh
 
-# CRITICAL: pytorch/nvidia images ship an entrypoint that can block forever on
-# GPU/driver checks. Hub then sits on "Waiting for container startup" for hours.
-# Clear it so we go straight to the RunPod handler.
+# CRITICAL: clear pytorch/nvidia ENTRYPOINT so Hub does not hang forever on
+# GPU/driver checks before our process even starts.
 ENTRYPOINT []
-CMD ["python", "-u", "handler.py"]
+CMD ["./start.sh"]

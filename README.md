@@ -34,18 +34,21 @@ Capten also sends `url`, `audio`, and `data:audio/wav;base64,...` formats.
 
 ## Deploy on RunPod Hub
 
-1. Push this repo to GitHub.
-2. Ensure `.runpod/Dockerfile`, `.runpod/hub.json`, and `.runpod/tests.json` are present (handler lives at repo-root `handler.py`).
-3. Create a **GitHub Release** (Hub indexes releases — rebuilds from the release tag).
-4. RunPod Console → Hub → rebuild the endpoint.
+1. Push this repo to GitHub (`main`).
+2. Ensure `.runpod/Dockerfile`, `.runpod/hub.json`, `.runpod/tests.json`, root `handler.py`, `cache_model.py`, and `start.sh` are present.
+3. Create a **new GitHub Release** (Hub often indexes releases — rebuild from the new tag).
+4. RunPod Console → Hub → rebuild.
 
-If Hub logs stall on **Waiting for container startup**, you need `cu128-v13+` (`ENTRYPOINT []` + 50 GB disk). Confirm health returns `"build": "cu128-v13"`.
+### Reading Hub logs
+
+- **Build OK, test stuck on `Waiting for container startup`** — container never became ready. `cu128-v14` adds `start.sh` (immediate log), `ENTRYPOINT []`, and **50 GB test-pod disk**. If you still see zero lines after deploy, the image pull/extract is failing on disk.
+- Confirm health returns `"build": "cu128-v14"`.
 
 ## Deploy manually
 
 1. New Serverless Endpoint → import from GitHub or Docker registry.
 2. Set **Model** to `Oriserve/Whisper-Hindi2Hinglish-Apex` for cached cold starts.
-3. GPU: 16 GB+, container disk: **50 GB** (Apex + MMS baked into the image).
+3. GPU: 16 GB+, container disk: **50 GB**.
 
 ## Capten `.env`
 

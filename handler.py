@@ -7,7 +7,7 @@ from pathlib import Path
 
 import runpod
 
-WORKER_BUILD_ID = "cu128-v13"
+WORKER_BUILD_ID = "cu128-v14"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
@@ -829,4 +829,9 @@ def handler(job):
 
 
 print("[startup] registering handler", flush=True)
-runpod.serverless.start({"handler": handler})
+try:
+    runpod.serverless.start({"handler": handler})
+except Exception:
+    print("[startup] FATAL: runpod.serverless.start failed", flush=True)
+    traceback.print_exc()
+    raise
