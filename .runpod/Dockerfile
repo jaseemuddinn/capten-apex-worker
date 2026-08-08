@@ -33,18 +33,16 @@ ENV HF_HOME=/root/.cache/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
 ENV RUNPOD_INIT_TIMEOUT=900
 ENV PYTHONUNBUFFERED=1
-# Avoid NVIDIA base entrypoint hanging Hub "Waiting for container startup".
 ENV NVIDIA_DISABLE_REQUIRE=1
-# Do NOT set HF_HUB_OFFLINE globally — Hub test pods and cold starts must be
-# able to fall back to the hub if the baked snapshot path is missing.
 
 COPY cache_model.py .
 RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python cache_model.py
 
-COPY handler.py start.sh ./
-RUN chmod +x start.sh
+# Hub + RunPod templates often invoke `python /handler.py` (repo-root convention).
+COPY handler.py /app/handler.py
+RUN cp /app/handler.py /handler.py
 
-# CRITICAL: clear pytorch/nvidia ENTRYPOINT so Hub does not hang forever on
-# GPU/driver checks before our process even starts.
+# Clear the pytorch/nvidia ENTRYPOINT (it can block Hub forever on GPU checks).
+# Use CMD only so Hub dockerStartCmd overrides work cleanly.
 ENTRYPOINT []
-CMD ["./start.sh"]
+CMD ["python", "-u", "/handler.py"]
