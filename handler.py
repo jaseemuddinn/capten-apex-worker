@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 
 # Print BEFORE importing runpod — if that import hangs, Hub used to show zero logs.
-WORKER_BUILD_ID = "cu128-v17"
+WORKER_BUILD_ID = "cu128-v18"
 print(f"[startup] python alive {WORKER_BUILD_ID}", flush=True)
 sys.stdout.flush()
 sys.stderr.flush()
@@ -768,8 +768,15 @@ def handler(job):
     pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
     sample = bytes_to_sample(audio_bytes)
-    duration = len(sample["array"]) / sample["sampling_rate"]
-    audio = np.asarray(sample["array"], dtype=np.float32)
+    # Whisper ASR pipeline mutates the input dict (pops sampling_rate). Capture
+    # everything MMS needs *before* ASR or we get KeyError: 'sampling_rate'.
+    sampling_rate = int(sample["sampling_rate"])
+    duration = len(sample["array"]) / sampling_rate
+    audio = np.asarray(sample["array"], dtype=np.float32).copy()
+    asr_sample = {
+        "array": np.asarray(sample["array"], dtype=np.float32).copy(),
+        "sampling_rate": sampling_rate,
+    }
 
     if duration <= 0:
         return {
@@ -789,14 +796,14 @@ def handler(job):
         text = align_text
         # Still run ASR for segment *windows* only — caller text is what we align.
         # Without windows, MMS on long files drifts (the old Hybrid failure mode).
-        asr = run_transcription(pipe, sample)
+        asr = run_transcription(pipe, asr_sample)
         chunks = assign_caller_text_to_chunks(text, asr.get("chunks") or [])
         print(
             f"[asr] windows from Apex, text from caller ({len(text)} chars)",
             flush=True,
         )
     else:
-        result = run_transcription(pipe, sample)
+        result = run_transcription(pipe, asr_sample)
         text = (result.get("text") or "").strip()
         chunks = result.get("chunks") or []
 
@@ -810,7 +817,7 @@ def handler(job):
             if device == "cuda":
                 torch.cuda.empty_cache()
             words, alignment = align_transcript(
-                audio, sample["sampling_rate"], text, chunks, device
+                audio, sampling_rate, text, chunks, device
             )
             if words:
                 print(f"[align] {alignment} words={len(words)}", flush=True)
