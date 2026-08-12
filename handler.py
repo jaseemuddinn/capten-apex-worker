@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 
 # Print BEFORE importing runpod — if that import hangs, Hub used to show zero logs.
-WORKER_BUILD_ID = "cu128-v16"
+WORKER_BUILD_ID = "cu128-v17"
 print(f"[startup] python alive {WORKER_BUILD_ID}", flush=True)
 sys.stdout.flush()
 sys.stderr.flush()
@@ -637,7 +637,11 @@ def align_transcript(audio, sr: int, text: str, chunks: list, device: str):
 
 
 def chunks_to_words(chunks: list) -> list[dict]:
-    """Legacy chunk-level timestamps (all words in a chunk share the same span)."""
+    """Fallback when MMS returns nothing: letter-weighted split inside each chunk.
+
+    Never assign every token the full chunk span — that glues the timeline shut
+    and makes CapCut-style silence gaps impossible downstream.
+    """
     words: list[dict] = []
     for chunk in chunks or []:
         text = (chunk.get("text") or "").strip()
@@ -646,10 +650,7 @@ def chunks_to_words(chunks: list) -> list[dict]:
             continue
         start = float(ts[0])
         end = float(ts[1] if ts[1] is not None else ts[0] + 0.3)
-        for token in text.split():
-            words.append(
-                {"word": token, "start": start, "end": end, "confidence": 0.9}
-            )
+        words.extend(weighted_words_in_span(text, start, end))
     return words
 
 
@@ -801,6 +802,7 @@ def handler(job):
 
     words: list[dict] = []
     alignment = "disabled"
+    align_error: str | None = None
     do_align = alignment_enabled(job_input)
 
     if do_align and text:
@@ -812,24 +814,46 @@ def handler(job):
             )
             if words:
                 print(f"[align] {alignment} words={len(words)}", flush=True)
+            else:
+                print(
+                    f"[align] MMS returned 0 words (tag={alignment}) — will fall back",
+                    flush=True,
+                )
         except Exception as exc:
             alignment = f"mms_failed:{type(exc).__name__}"
+            align_error = f"{type(exc).__name__}: {exc}"
             print(f"[align] MMS alignment failed: {exc}", flush=True)
             traceback.print_exc()
+    elif not do_align:
+        print("[align] skipped (ENABLE_ALIGNMENT=false or skip_alignment)", flush=True)
 
     if align_text and words:
         alignment = f"{alignment}+provided_text"
 
+    # Preserve the real MMS failure reason — Capten used to only see chunk_fallback.
+    prior_alignment = alignment
     if not words:
         words = chunks_to_words(chunks)
         if words:
-            alignment = "chunk_fallback"
+            alignment = (
+                f"chunk_fallback_after:{prior_alignment}"
+                if prior_alignment not in ("disabled", "chunk_fallback")
+                else "chunk_fallback"
+            )
+            print(
+                f"[align] {alignment} words={len(words)} chunks={len(chunks or [])}",
+                flush=True,
+            )
 
     if not words and text:
         words = text_to_words(text, duration)
-        alignment = "even_fallback"
+        alignment = (
+            f"even_fallback_after:{prior_alignment}"
+            if prior_alignment not in ("disabled", "even_fallback")
+            else "even_fallback"
+        )
 
-    return {
+    out: dict = {
         "text": text,
         "words": words,
         "segments": build_output_segments(words, text, duration),
@@ -841,6 +865,9 @@ def handler(job):
         "align_language": ALIGN_LANGUAGE,
         "align_model": ALIGN_MODEL,
     }
+    if align_error:
+        out["align_error"] = align_error
+    return out
 
 
 print("[startup] registering handler", flush=True)
