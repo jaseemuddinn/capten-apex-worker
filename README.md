@@ -6,22 +6,22 @@ RunPod Serverless worker for [Oriserve/Whisper-Hindi2Hinglish-Apex](https://hugg
 
 ## If Hub tests hang on “Waiting for container startup”
 
-Hub’s **GPU test pods** have been unreliable with this ~5–6 GB CUDA image (build succeeds; test never runs the handler). `cu128-v15` changes Hub tests to a **CPU** health check (`FORCE_CPU=true`, no torch init) and starts via `python -u /handler.py`.
+Hub **always uses a GPU test pod** for GPU listings (`runsOn: GPU`). `cpuFlavor` in `tests.json` is ignored — your Aug 8 log still says RTX 4090.
 
-**Recommended: skip Hub for Capten production — deploy a manual Serverless endpoint** from the registry image Hub already built:
+`cu128-v16` replaces the NVIDIA entrypoint with `/start.sh` (prints immediately, then `exec python -u /handler.py`) and prints before `import runpod`. Empty `ENTRYPOINT []` was breaking Hub’s start command, which is why tests never logged a single worker line.
 
-1. RunPod Console → **Serverless** → **New Endpoint** → **Import from Docker registry**
-2. Image (from a successful Hub build log), e.g.  
-   `registry.runpod.net/jaseemuddinn-capten-apex-worker-main-runpod-dockerfile:<tag>`
-3. GPU: 16 GB+ · Container disk: **50 GB** · `workersMin` 0–1
-4. Env:
-   - `MODEL_ID=Oriserve/Whisper-Hindi2Hinglish-Apex`
-   - `ALIGN_MODEL=MahmoudAshraf/mms-300m-1130-forced-aligner`
-   - `ALIGN_LANGUAGE=hin`
-   - `ENABLE_ALIGNMENT=true`
-   - `RUNPOD_INIT_TIMEOUT=900`
-5. Put the endpoint id in Capten `.env` as `RUNPOD_ENDPOINT_ID=...`
-6. Smoke test: `{ "input": { "health_check": true } }` → expect `"build": "cu128-v15"`
+You don’t need Docker on your laptop. Use **Deploy from a GitHub repository** (not Hub, not `registry.runpod.net`).
+
+1. Push this repo to GitHub (`main`).
+2. RunPod → **Serverless** → **New Endpoint** → **Deploy from a GitHub repository**.
+3. Repo: `jaseemuddinn/capten-apex-worker` · Branch: `main` · **Dockerfile path:** `Dockerfile` (repo root).
+4. Endpoint type: **Queue**. GPU 16 GB+. Container disk **50 GB**.
+5. Env: `MODEL_ID`, `ALIGN_MODEL`, `ALIGN_LANGUAGE=hin`, `ENABLE_ALIGNMENT=true`, `RUNPOD_INIT_TIMEOUT=900`.
+6. Deploy — RunPod builds the image. No Hub tests.
+
+Smoke test `{ "input": { "health_check": true } }`, then set `RUNPOD_ENDPOINT_ID` in Capten.
+
+**Do not** use Deploy from the Hub (2h tests) or paste `registry.runpod.net/...` (Hub registry auth error).
 
 ## Hub release (optional)
 

@@ -1,13 +1,21 @@
 """Capten Apex RunPod worker — keep top-level imports minimal for fast Hub health checks."""
 from __future__ import annotations
 
+import sys
+
+# Print BEFORE importing runpod — if that import hangs, Hub used to show zero logs.
+WORKER_BUILD_ID = "cu128-v16"
+print(f"[startup] python alive {WORKER_BUILD_ID}", flush=True)
+sys.stdout.flush()
+sys.stderr.flush()
+
 import os
 import traceback
 from pathlib import Path
 
+print("[startup] importing runpod", flush=True)
 import runpod
 
-WORKER_BUILD_ID = "cu128-v15"
 print(f"[startup] capten apex worker {WORKER_BUILD_ID}", flush=True)
 
 MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
