@@ -1,37 +1,70 @@
 # Capten Apex Worker
 
-RunPod Serverless worker: Apex Hinglish STT + MMS word alignment.
+[![Runpod](https://api.runpod.io/badge/jaseemuddinn/capten-apex-worker)](https://console.runpod.io/hub/jaseemuddinn/capten-apex-worker)
 
-## Why Hub always “tests”
+RunPod Serverless worker for [Oriserve/Whisper-Hindi2Hinglish-Apex](https://huggingface.co/Oriserve/Whisper-Hindi2Hinglish-Apex) + MMS forced alignment.
 
-This repo is already a **Hub listing**. Hub has **no skip-tests button**. If `.runpod/tests.json` exists, every GitHub **Release** (and Hub rebuild) does:
+## If Hub tests hang on “Waiting for container startup”
 
-1. Build image  
-2. Spin a **GPU test pod** (`Deploying test pod on RTX 4090… Waiting for container startup…`)  
-3. Hang for up to 2 hours if that pod never starts  
+Hub **always uses a GPU test pod** for GPU listings (`runsOn: GPU`). `cpuFlavor` in `tests.json` is ignored - your Aug 8 log still says RTX 4090.
 
-That is why it looks the same every time. Changing the handler does not skip step 2.
+`cu128-v16` replaces the NVIDIA entrypoint with `/start.sh` (prints immediately, then `exec python -u /handler.py`) and prints before `import runpod`. Empty `ENTRYPOINT []` was breaking Hub’s start command, which is why tests never logged a single worker line.
 
-**Fix in this repo:** `.runpod/tests.json` is renamed to `.runpod/tests_.json` (same trick as official `worker-comfyui`). Hub then **skips the test pod** and only builds.
+**Recommended: skip Hub for Capten production - deploy a manual Serverless endpoint** from the registry image Hub already built:
 
-## What to do now
+1. RunPod Console → **Serverless** → **New Endpoint** → **Import from Docker registry**
+2. Image (from a successful Hub build log), e.g.  
+   `registry.runpod.net/jaseemuddinn-capten-apex-worker-main-runpod-dockerfile:<tag>`
+3. GPU: 16 GB+ · Container disk: **50 GB** · `workersMin` 0–1
+4. Env:
+   - `MODEL_ID=Oriserve/Whisper-Hindi2Hinglish-Apex`
+   - `ALIGN_MODEL=MahmoudAshraf/mms-300m-1130-forced-aligner`
+   - `ALIGN_LANGUAGE=hin`
+   - `ENABLE_ALIGNMENT=true`
+   - `RUNPOD_INIT_TIMEOUT=900`
+5. Put the endpoint id in Capten `.env` as `RUNPOD_ENDPOINT_ID=...`
+6. Smoke test: `{ "input": { "health_check": true } }` → expect `"build": "cu128-v15"`
 
-1. Commit + push `main`.
-2. Create a **new GitHub Release** (Hub only indexes releases).
-3. In Hub, wait for **build** only — you should **not** see “Deploying test pod”.
-4. After build succeeds, **Create an endpoint → Deploy from the Hub** (Hub can pull its own registry).
+## Hub release (optional)
 
-### Capten production (no Hub at all)
+1. Push `main`, create GitHub **Release** `v1.0.xx`
+2. Rebuild on Hub - tests should use CPU flavor `cpu3c`, not RTX 4090
+3. Logs should show `[startup] capten apex worker cu128-v15` within ~1–2 minutes of pod deploy
 
-**Serverless → New Endpoint → Deploy from a GitHub repository** (the GitHub card).
+## Input
 
-- Repo `jaseemuddinn/capten-apex-worker`, branch `main`, Dockerfile `Dockerfile`
-- Queue, 16 GB+ GPU, **50 GB** disk
-- Env: `ENABLE_ALIGNMENT=true`, `RUNPOD_INIT_TIMEOUT=900`
+```json
+{ "input": { "audio_url": "https://example.com/audio.wav" } }
+```
 
-This path does **not** use Hub tests. If you still see “test pod”, you clicked **Hub**, not GitHub.
+```json
+{ "input": { "align_text": "hinglish transcript...", "audio_url": "..." } }
+```
 
-Do **not** paste `registry.runpod.net/...` into Docker deploy (Hub auth error).  
-Do **not** install Docker on your Mac.
+```json
+{
+  "input": {
+    "align_text": "yeh perfect hai",
+    "align_backend": "mms_fa",
+    "audio_url": "https://example.com/audio.wav",
+    "language": "hin"
+  }
+}
+```
 
-Smoke: `{ "input": { "health_check": true } }` → set `RUNPOD_ENDPOINT_ID` in Capten.
+- `align_backend` omitted / `apex` → **option C** (Hybrid): Apex ASR windows + `ctc_forced_aligner` MMS  
+- `align_backend: "mms_fa"` → **option A**: torchaudio `MMS_FA` CTC (no Apex ASR)
+
+Standalone CLI (same module):
+
+```bash
+python mms_fa_align.py --audio clip.wav --text "yeh perfect hai" --lang hin --json out.json --srt out.srt
+```
+
+## Capten `.env`
+
+```env
+GPU_MODE=runpod
+RUNPOD_API_KEY=rpa_...
+RUNPOD_ENDPOINT_ID=your_endpoint_id
+```

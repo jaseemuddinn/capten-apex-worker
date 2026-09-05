@@ -1,10 +1,10 @@
-"""Capten Apex RunPod worker — keep top-level imports minimal for fast Hub health checks."""
+"""Capten Apex RunPod worker - keep top-level imports minimal for fast Hub health checks."""
 from __future__ import annotations
 
 import sys
 
-# Print BEFORE importing runpod — if that import hangs, Hub used to show zero logs.
-WORKER_BUILD_ID = "cu128-v18"
+# Print BEFORE importing runpod - if that import hangs, Hub used to show zero logs.
+WORKER_BUILD_ID = "cu128-v19"
 print(f"[startup] python alive {WORKER_BUILD_ID}", flush=True)
 sys.stdout.flush()
 sys.stderr.flush()
@@ -22,7 +22,7 @@ MODEL_ID = os.getenv("MODEL_ID", "Oriserve/Whisper-Hindi2Hinglish-Apex")
 ALIGN_MODEL = os.getenv(
     "ALIGN_MODEL", "MahmoudAshraf/mms-300m-1130-forced-aligner"
 )
-# ISO 639-3 — MMS forced aligner vocabulary is Latin a–z; works with Apex Hinglish text.
+# ISO 639-3 - MMS forced aligner vocabulary is Latin a–z; works with Apex Hinglish text.
 ALIGN_LANGUAGE = os.getenv("ALIGN_LANGUAGE", "hin")
 ENABLE_ALIGNMENT = os.getenv("ENABLE_ALIGNMENT", "true").lower() not in (
     "0",
@@ -80,7 +80,7 @@ def force_cpu() -> bool:
 def cuda_kernels_ok(timeout_sec: float = 15.0) -> bool:
     """True when this PyTorch build can run fp16 kernels on the visible GPU.
 
-    Hub test pods have hung forever on a stuck CUDA matmul — always bound the
+    Hub test pods have hung forever on a stuck CUDA matmul - always bound the
     probe with a thread timeout so health_check cannot block the 2h Hub budget.
     """
     import threading
@@ -121,7 +121,7 @@ def cuda_kernels_ok(timeout_sec: float = 15.0) -> bool:
     t.join(timeout=timeout_sec)
     if t.is_alive():
         print(
-            f"[cuda] probe timed out after {timeout_sec:.0f}s — treating as unavailable",
+            f"[cuda] probe timed out after {timeout_sec:.0f}s - treating as unavailable",
             flush=True,
         )
         return False
@@ -248,7 +248,7 @@ def load_mms_align_model():
     elif not offline:
         print(f"[align] downloading MMS model {ALIGN_MODEL}", flush=True)
 
-    # Load directly — ctc_forced_aligner's wrapper uses `dtype=` which breaks on transformers 4.46+.
+    # Load directly - ctc_forced_aligner's wrapper uses `dtype=` which breaks on transformers 4.46+.
     _mms_model = AutoModelForCTC.from_pretrained(
         model_source,
         torch_dtype=dtype,
@@ -320,7 +320,7 @@ def run_transcription(pipe, sample: dict) -> dict:
     except Exception as exc:  # tokenizer without timestamp tokens
         print(
             f"[asr] segment timestamps unavailable ({type(exc).__name__}: {exc}) "
-            "— decoding text only",
+            "- decoding text only",
             flush=True,
         )
         return pipe(sample, chunk_length_s=30, batch_size=4)
@@ -535,7 +535,7 @@ def assign_caller_text_to_chunks(text: str, chunks: list) -> list:
         if out:
             out[-1]["text"] = f"{out[-1]['text']} {leftover}".strip()
         else:
-            # No windows produced — fabricate one covering full span.
+            # No windows produced - fabricate one covering full span.
             first = usable[0]
             last = usable[-1]
             ts0 = first.get("timestamp") or (0.0, 0.0)
@@ -616,7 +616,7 @@ def align_transcript(audio, sr: int, text: str, chunks: list, device: str):
                 failed += 1
                 print(
                     f"[align] window {w0:.2f}-{w1:.2f}s failed "
-                    f"({type(exc).__name__}: {exc}) — weighted split",
+                    f"({type(exc).__name__}: {exc}) - weighted split",
                     flush=True,
                 )
                 aligned = weighted_words_in_span(
@@ -639,7 +639,7 @@ def align_transcript(audio, sr: int, text: str, chunks: list, device: str):
 def chunks_to_words(chunks: list) -> list[dict]:
     """Fallback when MMS returns nothing: letter-weighted split inside each chunk.
 
-    Never assign every token the full chunk span — that glues the timeline shut
+    Never assign every token the full chunk span - that glues the timeline shut
     and makes CapCut-style silence gaps impossible downstream.
     """
     words: list[dict] = []
@@ -702,7 +702,7 @@ def handler(job):
     job_input = job["input"]
 
     if job_input.get("health_check"):
-        # Must return quickly with status=ok — Hub only checks HTTP 200 / job success.
+        # Must return quickly with status=ok - Hub only checks HTTP 200 / job success.
         # Avoid importing torch when FORCE_CPU / lite health is enough for Hub tests.
         info: dict = {
             "status": "ok",
@@ -714,7 +714,7 @@ def handler(job):
             "device": "cpu" if force_cpu() else "unknown",
         }
         if job_input.get("lite") or force_cpu():
-            # Hub CPU test path — no torch/CUDA init.
+            # Hub CPU test path - no torch/CUDA init.
             print(f"[health] lite ok build={WORKER_BUILD_ID}", flush=True)
             return info
 
@@ -764,19 +764,18 @@ def handler(job):
     # Caller-supplied text (e.g. Sarvam) is MMS-aligned; Apex still provides windows.
     align_text = job_input.get("align_text")
     align_text = align_text.strip() if isinstance(align_text, str) else ""
+    align_backend = str(job_input.get("align_backend") or "apex").strip().lower()
+    # Option A: torchaudio MMS_FA. Option C / default: Apex windows + ctc_forced_aligner.
+    if align_backend in ("mms_fa", "torchaudio", "torchaudio_mms_fa"):
+        align_backend = "mms_fa"
+    else:
+        align_backend = "apex"
 
-    pipe = load_pipeline()
     audio_bytes = load_audio_bytes(job_input)
     sample = bytes_to_sample(audio_bytes)
-    # Whisper ASR pipeline mutates the input dict (pops sampling_rate). Capture
-    # everything MMS needs *before* ASR or we get KeyError: 'sampling_rate'.
     sampling_rate = int(sample["sampling_rate"])
     duration = len(sample["array"]) / sampling_rate
     audio = np.asarray(sample["array"], dtype=np.float32).copy()
-    asr_sample = {
-        "array": np.asarray(sample["array"], dtype=np.float32).copy(),
-        "sampling_rate": sampling_rate,
-    }
 
     if duration <= 0:
         return {
@@ -790,11 +789,78 @@ def handler(job):
             "alignment": "empty_audio",
             "align_language": ALIGN_LANGUAGE,
             "align_model": ALIGN_MODEL,
+            "align_backend": align_backend,
         }
+
+    # ── Option A: Sarvam text + torchaudio MMS_FA (no Apex ASR) ───────────
+    if align_backend == "mms_fa":
+        if not align_text:
+            raise ValueError(
+                "align_backend=mms_fa requires align_text (Sarvam transcript)"
+            )
+        text = align_text
+        words: list[dict] = []
+        alignment = "mms_fa"
+        align_error: str | None = None
+        try:
+            from mms_fa_align import AlignmentError, align_words
+
+            import torch
+
+            waveform = torch.from_numpy(audio).float().unsqueeze(0)
+            lang = job_input.get("language") or ALIGN_LANGUAGE
+            words = align_words(
+                waveform,
+                text,
+                language=str(lang),
+                sample_rate=sampling_rate,
+                device=device,
+            )
+            if words:
+                print(
+                    f"[align] mms_fa words={len(words)} text_chars={len(text)}",
+                    flush=True,
+                )
+            else:
+                alignment = "mms_fa_empty"
+        except Exception as exc:
+            alignment = f"mms_fa_failed:{type(exc).__name__}"
+            align_error = f"{type(exc).__name__}: {exc}"
+            print(f"[align] MMS_FA failed: {exc}", flush=True)
+            traceback.print_exc()
+            words = text_to_words(text, duration)
+            if words:
+                alignment = f"even_fallback_after:{alignment}"
+
+        out: dict = {
+            "text": text,
+            "words": words,
+            "segments": build_output_segments(words, text, duration),
+            "language": "HINGLISH",
+            "model": "torchaudio.pipelines.MMS_FA",
+            "build": WORKER_BUILD_ID,
+            "device": device,
+            "alignment": alignment,
+            "align_language": str(job_input.get("language") or ALIGN_LANGUAGE),
+            "align_model": "torchaudio.pipelines.MMS_FA",
+            "align_backend": "mms_fa",
+        }
+        if align_error:
+            out["align_error"] = align_error
+        return out
+
+    # ── Option C: Hybrid / Apex ASR windows + ctc_forced_aligner MMS ──────
+    pipe = load_pipeline()
+    # Whisper ASR pipeline mutates the input dict (pops sampling_rate). Capture
+    # everything MMS needs *before* ASR or we get KeyError: 'sampling_rate'.
+    asr_sample = {
+        "array": np.asarray(sample["array"], dtype=np.float32).copy(),
+        "sampling_rate": sampling_rate,
+    }
 
     if align_text:
         text = align_text
-        # Still run ASR for segment *windows* only — caller text is what we align.
+        # Still run ASR for segment *windows* only - caller text is what we align.
         # Without windows, MMS on long files drifts (the old Hybrid failure mode).
         asr = run_transcription(pipe, asr_sample)
         chunks = assign_caller_text_to_chunks(text, asr.get("chunks") or [])
@@ -807,9 +873,9 @@ def handler(job):
         text = (result.get("text") or "").strip()
         chunks = result.get("chunks") or []
 
-    words: list[dict] = []
+    words = []
     alignment = "disabled"
-    align_error: str | None = None
+    align_error = None
     do_align = alignment_enabled(job_input)
 
     if do_align and text:
@@ -823,7 +889,7 @@ def handler(job):
                 print(f"[align] {alignment} words={len(words)}", flush=True)
             else:
                 print(
-                    f"[align] MMS returned 0 words (tag={alignment}) — will fall back",
+                    f"[align] MMS returned 0 words (tag={alignment}) - will fall back",
                     flush=True,
                 )
         except Exception as exc:
@@ -837,7 +903,7 @@ def handler(job):
     if align_text and words:
         alignment = f"{alignment}+provided_text"
 
-    # Preserve the real MMS failure reason — Capten used to only see chunk_fallback.
+    # Preserve the real MMS failure reason - Capten used to only see chunk_fallback.
     prior_alignment = alignment
     if not words:
         words = chunks_to_words(chunks)
@@ -860,7 +926,7 @@ def handler(job):
             else "even_fallback"
         )
 
-    out: dict = {
+    out = {
         "text": text,
         "words": words,
         "segments": build_output_segments(words, text, duration),
@@ -871,6 +937,7 @@ def handler(job):
         "alignment": alignment,
         "align_language": ALIGN_LANGUAGE,
         "align_model": ALIGN_MODEL,
+        "align_backend": "apex",
     }
     if align_error:
         out["align_error"] = align_error

@@ -2,7 +2,7 @@ FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 
 WORKDIR /app
 
-# Conda python in the base image includes dev headers — do not install apt python3-dev (wrong ABI).
+# Conda python in the base image includes dev headers - do not install apt python3-dev (wrong ABI).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# MMS forced aligner — compiles a pybind11 C++ extension at install time.
+# MMS forced aligner - compiles a pybind11 C++ extension at install time.
 RUN pip install --no-cache-dir pybind11 setuptools wheel && \
     pip install --no-cache-dir --no-deps \
     "https://github.com/MahmoudAshraf97/ctc-forced-aligner/archive/264e7a1f81bff9ff5e787a5537020c2ad0b0df02.tar.gz" && \
@@ -40,8 +40,11 @@ RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python cache_model.py
 
 # Hub + RunPod templates often invoke `python /handler.py`.
 COPY handler.py /app/handler.py
+COPY mms_fa_align.py /app/mms_fa_align.py
 COPY start.sh /start.sh
-RUN cp /app/handler.py /handler.py && chmod +x /start.sh
+RUN cp /app/handler.py /handler.py \
+    && cp /app/mms_fa_align.py /mms_fa_align.py \
+    && chmod +x /start.sh
 
 # Override the pytorch/nvidia entrypoint. Empty ENTRYPOINT [] breaks Hub's
 # dockerStartCmd and the container never becomes ready (zero logs, 2h timeout).
